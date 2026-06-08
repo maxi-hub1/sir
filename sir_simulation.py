@@ -41,6 +41,11 @@ import matplotlib.widgets as mwidgets
 # Damit wird die Frame-für-Frame-Animation realisiert.
 from matplotlib.animation import FuncAnimation
 
+# GridSpec: Ermöglicht ein flexibles Rasterlayout für Subplots mit unterschiedlichen
+# Höhenverhältnissen – hier 2 Zeilen (Netzwerke groß oben, Kurven kompakt unten)
+# und 3 Spalten, eine Spalte pro Topologie.
+from matplotlib.gridspec import GridSpec
+
 
 # ── Zustandskonstanten ───────────────────────────────────────────────────────
 STATE_S = "S"   # Anfällig  (Susceptible):  gesund, kann infiziert werden
@@ -62,6 +67,18 @@ HOLIDAY_BUFFER = 3
 
 # ── Namen der drei Topologien für Achsentitel ────────────────────────────────
 TOPOLOGY_NAMES = ["Erdős-Rényi", "Watts-Strogatz", "Barabási-Albert"]
+
+# ── Deutsche Monatsabkürzungen (für die X-Achse der Verlaufskurven) ──────────
+# Die Reihenfolge entspricht den Monaten Januar bis Dezember.
+MONTH_NAMES = [
+    "Jan", "Feb", "Mär", "Apr", "Mai", "Jun",
+    "Jul", "Aug", "Sep", "Okt", "Nov", "Dez",
+]
+
+# ── Erster Kalendertag jedes Monats (1 = 1. Jan, 335 = 1. Dez) ───────────────
+# Wird genutzt, um aus einem Kalendertag den zugehörigen Monatsnamen zu bestimmen
+# und Tick-Positionen auf der X-Achse der Verlaufskurven zu platzieren.
+MONTH_START_DAYS = [1, 32, 60, 91, 121, 152, 182, 213, 244, 274, 305, 335]
 
 # ── Schriftgröße global setzen ───────────────────────────────────────────────
 plt.rcParams["font.size"] = 9
@@ -368,11 +385,12 @@ def run_simulation(graph, beta, gamma_base, seed, extended_mode):
         extended_mode (bool)    : True = Saisonale Effekte aktiv (Jahreszeit, Feiertage).
 
     Rückgabe:
-        tuple[list, int]:
-            - history (list): Liste von Tupeln (states_dict, calendar_day), ein Tupel
+        tuple[list, int, int]:
+            - history (list)      : Liste von Tupeln (states_dict, calendar_day), ein Tupel
               pro Simulationstag. states_dict = {Knoten-ID: Zustandsstring}.
               Index 0 = Anfangszustand (Patient Zero infiziert, Kalendertag = start_day).
-            - start_day (int): Der Kalendertag, an dem die Infektion begann (1–365).
+            - start_day (int)    : Der Kalendertag, an dem die Infektion begann (1–365).
+            - patient_zero (int) : Knoten-ID des ersten Infizierten (vom Seed bestimmt).
     """
     # Zufallsgenerator mit dem Seed initialisieren (für Reproduzierbarkeit)
     rng = random.Random(seed)
@@ -409,7 +427,8 @@ def run_simulation(graph, beta, gamma_base, seed, extended_mode):
         if infected_count == 0:
             break
 
-    return history, start_day
+    # patient_zero zusätzlich zurückgeben, damit die UI ihn anzeigen kann
+    return history, start_day, patient_zero
 
 
 # =============================================================================
@@ -422,25 +441,42 @@ def run_simulation(graph, beta, gamma_base, seed, extended_mode):
 # Alle Callback-Funktionen lesen und schreiben auf dieses gemeinsame Objekt.
 # (Es ersetzt den Einsatz einer Klasse und ist für Anfänger leichter lesbar.)
 sim_state = {
-    "playing":       False,             # Ob die Animation gerade läuft
-    "extended_mode": False,             # Ob der Extended Mode aktiv ist
-    "current_frame": 0,                 # Aktuell angezeigter Frame-Index
-    "histories":     [None, None, None],  # Vorberechnete Simulationsverläufe
-    "start_days":    [None, None, None],  # Startdaten der drei Simulationen
-    "graphs":        [None, None, None],  # Die drei Netzwerkgraphen
-    "layouts":       [None, None, None],  # Knotenpositionierungen (Spring-Layout)
-    "max_frames":    0,                 # Kleinste Simulationslänge (Sync-Grenze)
+    "playing":        False,               # Ob die Animation gerade läuft
+    "extended_mode":  False,               # Ob der Extended Mode aktiv ist
+    "current_frame":  0,                   # Aktuell angezeigter Frame-Index
+    "histories":      [None, None, None],  # Vorberechnete Simulationsverläufe
+    "start_days":     [None, None, None],  # Startdaten der drei Simulationen
+    "patient_zeros":  [None, None, None],  # Patient-Zero-Knoten-ID je Simulation
+    "graphs":         [None, None, None],  # Die drei Netzwerkgraphen
+    "layouts":        [None, None, None],  # Knotenpositionierungen (Spring-Layout)
+    "max_frames":     0,                   # Längste Simulationslänge (individueller Abbruch)
 }
 
 
-# ── Figure und Subplots ───────────────────────────────────────────────────────
-# Drei Netzwerk-Subplots nebeneinander; breites Format für übersichtliche Darstellung
-fig, (ax_er, ax_ws, ax_ba) = plt.subplots(1, 3, figsize=(18, 9))
-axes = [ax_er, ax_ws, ax_ba]   # Als Liste für einfache Iteration
+# ── Figure mit GridSpec (2 Zeilen × 3 Spalten) ───────────────────────────────
+# Zeile 0 (height_ratio 3): Netzwerk-Visualisierungen – größer dargestellt.
+# Zeile 1 (height_ratio 2): SIR-Verlaufskurven – kompakter, aber gut lesbar.
+# top=0.88, bottom=0.40 → 48 % der Figurhöhe für die Plots;
+# die restlichen 40 % unten sind für die Slider-Kontrollleiste reserviert.
+fig = plt.figure(figsize=(20, 11))
 
-# Platz am unteren Rand für Slider und Buttons freihalten
-plt.subplots_adjust(left=0.04, right=0.98, top=0.93, bottom=0.40)
-fig.suptitle("SIR-Netzwerksimulation  –  Topologievergleich", fontsize=12, y=0.98)
+gs = GridSpec(
+    2, 3,
+    figure=fig,
+    top=0.88, bottom=0.40,
+    left=0.05, right=0.98,
+    height_ratios=[3, 2],
+    hspace=0.55, wspace=0.28,
+)
+
+# Netzwerk-Achsen (obere Zeile): zeigen Knoten und Kanten farblich nach S/I/R
+ax_nets   = [fig.add_subplot(gs[0, i]) for i in range(3)]
+# Verlaufskurven-Achsen (untere Zeile): zeigen S/I/R-Zeitreihen mit Monatsbeschriftung
+ax_curves = [fig.add_subplot(gs[1, i]) for i in range(3)]
+
+# Haupttitel: y=0.96 liegt sicher oberhalb des GridSpec-Bereichs (top=0.88),
+# damit er keinen Subplot-Titel überlappt.
+fig.suptitle("SIR-Netzwerksimulation  –  Topologievergleich", fontsize=13, y=0.96)
 
 
 # ── Slider-Achsen (linke Hälfte der Kontrollleiste) ───────────────────────────
@@ -486,11 +522,11 @@ slider_gamma = mwidgets.Slider(
     valmin=0.0, valmax=1.0, valinit=0.1,
 )
 
-# Seed: Zufallsinitialisierung; bestimmt Startdatum + Patient Zero (0 bis 9999)
+# Seed: Zufallsinitialisierung; bestimmt Startdatum + Patient Zero (0 bis 999)
 slider_seed = mwidgets.Slider(
     ax=ax_slider_seed,
     label="Seed",
-    valmin=0, valmax=9999, valinit=42, valstep=1,
+    valmin=0, valmax=999, valinit=42, valstep=1,
 )
 
 
@@ -512,13 +548,13 @@ chk_extended = mwidgets.CheckButtons(
 )
 
 
-# ── Hilfsfunktionen für die Visualisierung ───────────────────────────────────
+# ── Hilfsfunktionen für Jahreszeiten, Monatsbeschriftung und Kurvenzeichnung ──
 
 def get_season_label(day):
     """
     Gibt die deutsche Jahreszeiten-Bezeichnung für einen Kalendertag zurück.
 
-    Verwendet eine vereinfachte astronomische Einteilung:
+    Verwendet eine vereinfachte meteorologische Einteilung:
         Winter  : Tage   1– 90 und 350–365 (Dez, Jan, Feb, Mär)
         Frühling: Tage  91–181             (Apr, Mai, Jun)
         Sommer  : Tage 182–273             (Jul, Aug, Sep)
@@ -541,45 +577,202 @@ def get_season_label(day):
     return "Herbst"
 
 
-def draw_frame(frame_idx):
+def day_to_month_name(cal_day):
     """
-    Zeichnet den Simulationszustand aller drei Netzwerke für einen bestimmten Frame.
+    Gibt die deutsche Monatsabkürzung für einen Kalendertag (1–365) zurück.
 
-    Für jeden der drei Subplots wird folgendes dargestellt:
-        - Kanten als dünne, halbtransparente graue Linien (Kontaktverbindungen)
-        - Knoten als Punkte, farblich nach SIR-Zustand kodiert:
-          Blau = anfällig (S), Rot = infiziert (I), Grün = genesen (R)
-        - Titel mit: Topologiename, Sim-Tag, Kalendertag, Jahreszeit,
-          Feiertags-Hinweis (nur im Extended Mode) und S/I/R-Zählerstand
-
-    Alle drei Achsen werden vor dem Zeichnen geleert (clear-and-redraw-Ansatz).
-    Anschließend wird der Canvas ohne blockierendes plt.show() aktualisiert.
+    Die Funktion durchsucht die Liste MONTH_START_DAYS rückwärts (Dezember zuerst)
+    und gibt den Monatsnamen zurück, in dessen Zeitraum der Tag fällt.
+    Zum Beispiel liefert cal_day=45 → "Feb" (Februar, Tage 32–59).
 
     Parameter:
-        frame_idx (int): Index in den Simulationsverläufen (0 = Anfangszustand).
-                         Wird automatisch auf den letzten gültigen Frame begrenzt,
-                         falls der Index die Länge der Simulation überschreitet.
+        cal_day (int): Kalendertag des Jahres (wird zyklisch auf 1–365 normiert).
 
     Rückgabe:
-        None. Die Funktion verändert die globalen Achsen-Objekte direkt.
+        str: Dreistellige deutsche Monatsabkürzung aus MONTH_NAMES,
+             z.B. "Jan", "Mär", "Dez".
     """
-    # Alle drei Achsen leeren
-    for ax in axes:
+    # Normierung auf 1–365
+    d = (cal_day - 1) % 365 + 1
+    # Rückwärts durch die Monatsstarts suchen (Dezember bis Januar)
+    for i in range(11, -1, -1):
+        if d >= MONTH_START_DAYS[i]:
+            return MONTH_NAMES[i]
+    return "Jan"  # Fallback (sollte nie erreicht werden)
+
+
+def get_month_ticks(start_day, total_steps):
+    """
+    Berechnet Tick-Positionen und Monatsnamen für die X-Achse einer Verlaufskurve.
+
+    Die X-Achse einer Verlaufskurve zeigt Simulationsschritte (0, 1, 2, ...),
+    soll aber mit deutschen Monatsnamen beschriftet werden. Diese Funktion
+    berechnet dafür:
+        1. Schritt 0 erhält immer einen Tick mit dem Monatsnamen des Startdatums.
+        2. Für jeden weiteren Schritt: Wenn der entsprechende Kalendertag der
+           erste Tag eines Monats ist (in MONTH_START_DAYS enthalten),
+           wird ein Tick gesetzt.
+
+    Beispiel: start_day=328 (November), total_steps=62:
+        → Ticks bei [0, 7, 39] mit Labels ["Nov", "Dez", "Jan"]
+
+    Parameter:
+        start_day   (int): Kalendertag, an dem die Simulation beginnt (1–365).
+                           Bestimmt den ersten Tick-Label.
+        total_steps (int): Maximale Anzahl von Simulationsschritten
+                           (= Länge der History − 1).
+
+    Rückgabe:
+        tuple[list[int], list[str]]:
+            - ticks  (list[int]): Simulationsschritt-Indizes für die Tick-Markierungen.
+            - labels (list[str]): Zugehörige deutsche Monatsabkürzungen.
+    """
+    # Erster Tick: Startschritt 0 bekommt den Monatsnamen des Startdatums
+    ticks  = [0]
+    labels = [day_to_month_name(start_day)]
+
+    # Alle weiteren Schritte prüfen: liegt ein Monatserster vor?
+    for step in range(1, total_steps + 1):
+        cal_day = (start_day - 1 + step) % 365 + 1
+        if cal_day in MONTH_START_DAYS:
+            month_idx = MONTH_START_DAYS.index(cal_day)
+            ticks.append(step)
+            labels.append(MONTH_NAMES[month_idx])
+
+    return ticks, labels
+
+
+def draw_curve_for(ax_curve, topology_idx, frame_idx):
+    """
+    Zeichnet die SIR-Verlaufskurven für eine Topologie in eine Kurven-Achse.
+
+    Die Funktion baut die Zeitreihendaten aus dem vorberechneten Simulationsverlauf
+    bis zum angegebenen Frame auf und zeichnet drei Linien in der Kurven-Achse:
+        - Blau  (COLOR_S): Zeitreihe der anfälligen Personen (S)
+        - Rot   (COLOR_I): Zeitreihe der infizierten Personen (I)
+        - Grün  (COLOR_R): Zeitreihe der genesenen Personen (R)
+
+    Die X-Achse zeigt Simulationsschritte (0, 1, ...) und wird mit deutschen
+    Monatsnamen beschriftet, die auf das Startdatum der Infektion kalibriert sind
+    (via get_month_ticks). Eine gestrichelte senkrechte Linie markiert den aktuell
+    angezeigten Zeitpunkt in der Animation.
+
+    Wenn die Simulation für diese Topologie noch nicht vorliegt (histories[idx] ist None),
+    wird die Achse nur geleert und keine Daten gezeichnet.
+
+    Parameter:
+        ax_curve     (matplotlib.axes.Axes): Ziel-Achse für die Kurven.
+                                              Entspricht einem Element aus ax_curves[].
+        topology_idx (int)                 : Index der Topologie (0=ER, 1=WS, 2=BA).
+                                              Bestimmt, welche Daten aus sim_state
+                                              gelesen werden.
+        frame_idx    (int)                 : Aktueller Animations-Frame-Index.
+                                              Wird auf den letzten gültigen Frame
+                                              der jeweiligen Topologie begrenzt.
+
+    Rückgabe:
+        None. Verändert ax_curve direkt (clear + neu zeichnen).
+    """
+    # Achse immer zuerst leeren (clear-and-redraw-Ansatz)
+    ax_curve.clear()
+
+    # Keine Simulation vorhanden → leere Achse zurückgeben
+    if sim_state["histories"][topology_idx] is None:
+        ax_curve.set_axis_off()
+        return
+
+    history   = sim_state["histories"][topology_idx]
+    n         = sim_state["graphs"][topology_idx].number_of_nodes()
+    start_day = sim_state["start_days"][topology_idx]
+    max_steps = len(history) - 1
+
+    # frame_idx auf gültigen Bereich dieser Topologie begrenzen
+    safe_idx = min(frame_idx, max_steps)
+
+    # Zeitreihen-Arrays bis zum aktuellen Frame aufbauen
+    steps_x = list(range(safe_idx + 1))
+    s_vals, i_vals, r_vals = [], [], []
+    for f in range(safe_idx + 1):
+        snap, _ = history[f]
+        s_vals.append(sum(1 for v in snap.values() if v == STATE_S))
+        i_vals.append(sum(1 for v in snap.values() if v == STATE_I))
+        r_vals.append(sum(1 for v in snap.values() if v == STATE_R))
+
+    # Drei Linien zeichnen (gleiche Farben wie die Knotenfarben)
+    ax_curve.plot(steps_x, s_vals, color=COLOR_S, lw=1.2, label="S")
+    ax_curve.plot(steps_x, i_vals, color=COLOR_I, lw=1.2, label="I")
+    ax_curve.plot(steps_x, r_vals, color=COLOR_R, lw=1.2, label="R")
+
+    # Gestrichelte senkrechte Linie am aktuellen Simulations-Tag
+    if steps_x:
+        ax_curve.axvline(x=steps_x[-1], color="#aaaaaa", lw=0.8, ls="--")
+
+    # Achsenlimits: X von 0 bis Simulations-Ende; Y von 0 bis N (+ 8% Randpuffer)
+    ax_curve.set_xlim(0, max(max_steps, 1))
+    ax_curve.set_ylim(0, n * 1.08)
+    ax_curve.set_ylabel("Personen", fontsize=6)
+    ax_curve.tick_params(labelsize=6)
+    ax_curve.grid(True, alpha=0.25, lw=0.4)
+
+    # X-Achse mit deutschen Monatsnamen beschriften (via Hilfsfunktion)
+    ticks, labels = get_month_ticks(start_day, max_steps)
+    ax_curve.set_xticks(ticks)
+    ax_curve.set_xticklabels(labels, fontsize=5.5, rotation=35, ha="right")
+
+
+def draw_frame(frame_idx):
+    """
+    Zeichnet für einen Animations-Frame alle drei Netzwerke UND die dazugehörigen
+    SIR-Verlaufskurven (obere Zeile: Netzwerke, untere Zeile: Kurven).
+
+    Für jede der drei Topologien werden zwei Plots aktualisiert:
+
+        Obere Zeile – Netzwerk (ax_nets[idx]):
+            - Kanten: tiefes Dunkelgrau (#262626), dünn und halbtransparent
+              (alpha=0.15), damit die farbigen Knoten optisch dominieren.
+            - Knoten: farbig nach SIR-Zustand (Blau=S / Rot=I / Grün=R).
+            - Titel: Topologiename, Sim-Tag, Kalendertag, Jahreszeit,
+              Feiertags-Hinweis (nur im Extended Mode), S/I/R-Zählerstand.
+
+        Untere Zeile – Verlaufskurven (ax_curves[idx]):
+            - Delegiert an draw_curve_for(), welches S/I/R-Linien mit
+              deutschen Monatsnamen auf der X-Achse zeichnet.
+
+    Jede Topologie wird separat auf ihren eigenen letzten gültigen Frame begrenzt
+    (safe_idx = min(frame_idx, len(history)−1)), sodass Topologien, die früher
+    fertig sind, ihren Endzustand dauerhaft anzeigen.
+
+    Alle Netzwerk-Achsen werden vor dem Zeichnen geleert (clear-and-redraw).
+    Die Kurven-Achsen werden durch draw_curve_for() intern geleert.
+    Abschließend wird der Canvas ohne blockierendes plt.show() aktualisiert.
+
+    Parameter:
+        frame_idx (int): Index in den Simulationsverläufen (0 = Infektionstag).
+                         Wird je Topologie auf deren letzten gültigen Frame begrenzt.
+
+    Rückgabe:
+        None. Verändert ax_nets[] und ax_curves[] direkt.
+    """
+    # Alle Netzwerk-Achsen leeren
+    for ax in ax_nets:
         ax.clear()
         ax.set_axis_off()
 
-    # Jeden Subplot einzeln zeichnen
-    for idx, ax in enumerate(axes):
+    # Jeden Subplot (Netzwerk + Kurve) einzeln zeichnen
+    for idx in range(3):
+        ax = ax_nets[idx]
+
         # Simulation muss bereits berechnet worden sein
         if sim_state["histories"][idx] is None:
             ax.set_title(f"{TOPOLOGY_NAMES[idx]}\n(Noch keine Simulation)", fontsize=9)
+            ax_curves[idx].clear()
             continue
 
         history = sim_state["histories"][idx]
         graph   = sim_state["graphs"][idx]
         pos     = sim_state["layouts"][idx]
 
-        # frame_idx auf gültigen Bereich begrenzen
+        # frame_idx auf gültigen Bereich dieser Topologie begrenzen
         safe_idx = min(frame_idx, len(history) - 1)
         states_snapshot, calendar_day = history[safe_idx]
 
@@ -587,16 +780,16 @@ def draw_frame(frame_idx):
         color_map   = {STATE_S: COLOR_S, STATE_I: COLOR_I, STATE_R: COLOR_R}
         node_colors = [color_map[states_snapshot[node]] for node in graph.nodes()]
 
-        # Knotengröße: bei mehr Knoten kleinere Punkte (damit sie nicht überlappen)
+        # Knotengröße: bei mehr Knoten kleinere Punkte (keine Überlappung)
         n_nodes   = graph.number_of_nodes()
         node_size = max(15, int(500 / max(1, n_nodes)))
 
-        # Kanten zeichnen (grau, dünn, halbtransparent)
+        # Kanten zeichnen: tiefes Dunkelgrau (#262626), damit farbige Knoten dominieren
         nx.draw_networkx_edges(
             graph, pos, ax=ax,
-            alpha=0.12, width=0.5, edge_color="#888888",
+            alpha=0.15, width=0.5, edge_color="#262626",
         )
-        # Knoten zeichnen (farbig nach Zustand)
+        # Knoten zeichnen (farbig nach SIR-Zustand)
         nx.draw_networkx_nodes(
             graph, pos, ax=ax,
             node_color=node_colors, node_size=node_size, alpha=0.90,
@@ -612,15 +805,18 @@ def draw_frame(frame_idx):
         holiday_note = ""
         if sim_state["extended_mode"] and is_holiday_period(calendar_day):
             holiday_note = "  | Feiertag (+Beta)"
-        ext_tag = "  [Extended Mode]" if sim_state["extended_mode"] else ""
+        ext_tag = "  [Ext.]" if sim_state["extended_mode"] else ""
 
-        # Titel des Subplots setzen
+        # Titel des Netzwerk-Subplots setzen
         ax.set_title(
             f"{TOPOLOGY_NAMES[idx]}{ext_tag}\n"
-            f"Sim-Tag {safe_idx}  |  Kal.-Tag ~{calendar_day}  |  {season}{holiday_note}\n"
-            f"S = {s_count}    I = {i_count}    R = {r_count}",
-            fontsize=9, pad=5,
+            f"Sim-Tag {safe_idx}  |  Kal.-Tag {calendar_day}  |  {season}{holiday_note}\n"
+            f"S={s_count}   I={i_count}   R={r_count}",
+            fontsize=8, pad=4,
         )
+
+        # Verlaufskurve in der unteren Zeile für diese Topologie zeichnen
+        draw_curve_for(ax_curves[idx], idx, frame_idx)
 
     # Canvas ohne blockierendes plt.show() neu zeichnen
     fig.canvas.draw_idle()
@@ -631,26 +827,31 @@ def draw_frame(frame_idx):
 def build_all_simulations():
     """
     Liest alle Slider-Werte aus, erstellt drei Netzwerkgraphen und berechnet
-    die vollständige Simulation für alle drei Topologien im Voraus.
+    die vollständigen Simulationen für alle drei Topologien im Voraus.
 
-    Dieser Ansatz (Vorberechnung aller Frames) ermöglicht eine verzögerungsfreie
-    Animation, da während der Wiedergabe keine Rechenoperationen mehr nötig sind.
+    Dieser Vorberechnungsansatz ermöglicht eine verzögerungsfreie Animation:
+    Alle Frames sind bereits vor dem Start der Wiedergabe bekannt.
+    Die Funktion wird aufgerufen bei:
+        - Klick auf '↺ Reset'
+        - Änderung eines beliebigen Sliders (Live-Reset)
+        - Änderung der Extended-Mode-Checkbox
+        - Beim Programmstart (initiale Berechnung)
 
     Ablauf:
         1. Slider-Werte N, avg_degree, beta, gamma_base, seed auslesen.
-        2. Drei Graphen (Erdős-Rényi, Watts-Strogatz, Barabási-Albert) mit
-           denselben Parametern und demselben Seed erstellen.
+        2. Drei Graphen (Erdős-Rényi, Watts-Strogatz, Barabási-Albert) erstellen.
         3. Spring-Layout für jeden Graphen berechnen (Knotenpositionen).
         4. run_simulation() für jeden Graphen vollständig durchführen.
-        5. Alle Ergebnisse in sim_state speichern.
-        6. max_frames = kürzeste Simulation − 1, damit alle synchron enden.
-        7. Frame-Zähler auf 0 setzen und ersten Frame zeichnen.
+        5. Ergebnisse in sim_state speichern.
+        6. max_frames = längste Simulation − 1 (individuelle Abbruchkriterien).
+        7. seed_info_text mit Startdatum, Patient-Zero und Sim-Dauern aktualisieren.
+        8. Frame-Zähler auf 0 setzen und Frame 0 zeichnen.
 
     Parameter:
         Keine. Alle Parameter werden aus den globalen Slider-Widgets gelesen.
 
     Rückgabe:
-        None. Verändert sim_state und die Achsen direkt.
+        None. Verändert sim_state, ax_nets[] und ax_curves[] direkt.
     """
     # ── Slider-Werte auslesen ─────────────────────────────────────────────────
     n          = int(slider_n.val)
@@ -667,30 +868,42 @@ def build_all_simulations():
         create_barabasi_albert(n, avg_degree, seed),
     ]
 
-    # ── Spring-Layout für jeden Graphen berechnen (Knotenpositionen im Plot) ──
-    # spring_layout positioniert eng verbundene Knoten räumlich näher beieinander
-    layouts = [
-        nx.spring_layout(g, seed=seed)
-        for g in graphs
-    ]
+    # ── Spring-Layout berechnen (räumliche Knotenpositionierung) ─────────────
+    # spring_layout platziert stark vernetzte Knoten räumlich näher beieinander
+    layouts = [nx.spring_layout(g, seed=seed) for g in graphs]
 
     # ── Vollständige Simulation für alle drei Topologien vorberechnen ─────────
-    histories  = []
-    start_days = []
+    # Jedes Modell läuft individuell bis I==0 oder max. 365 Tage.
+    # Kein Modell wird vorzeitig gestoppt, weil ein anderes bereits fertig ist.
+    histories, start_days, patient_zeros = [], [], []
     for g in graphs:
-        hist, sday = run_simulation(g, beta, gamma_base, seed, extended)
+        hist, sday, pzero = run_simulation(g, beta, gamma_base, seed, extended)
         histories.append(hist)
         start_days.append(sday)
+        patient_zeros.append(pzero)
 
     # ── Ergebnisse in sim_state speichern ─────────────────────────────────────
-    sim_state["graphs"]     = graphs
-    sim_state["layouts"]    = layouts
-    sim_state["histories"]  = histories
-    sim_state["start_days"] = start_days
-    # max_frames = kürzeste Simulation − 1 (für synchronen Gleichlauf aller drei)
-    sim_state["max_frames"] = min(len(h) for h in histories) - 1
+    sim_state["graphs"]        = graphs
+    sim_state["layouts"]       = layouts
+    sim_state["histories"]     = histories
+    sim_state["start_days"]    = start_days
+    sim_state["patient_zeros"] = patient_zeros
+    # max_frames = LÄNGSTE Simulation − 1: alle drei laufen bis zum letzten Ende.
+    # Kurz beendete Topologien frieren auf ihrem Endzustand ein (via safe_idx).
+    sim_state["max_frames"] = max(len(h) for h in histories) - 1
 
-    # Animation zurücksetzen und ersten Frame zeichnen
+    # ── Seed-Info-Label mit den festgelegten Startparametern aktualisieren ────
+    # Da alle drei Topologien denselben Seed verwenden, sind start_day und
+    # patient_zero für alle drei identisch.
+    durations = [len(h) - 1 for h in histories]
+    seed_info_text.set_text(
+        f"Seed {seed}  ──  festgelegte Parameter:\n"
+        f"  Startdatum :  Tag {start_days[0]}  ({get_season_label(start_days[0])})\n"
+        f"  Patient Zero:  Knoten #{patient_zeros[0]}\n"
+        f"  Sim-Dauer  :  ER={durations[0]}d  WS={durations[1]}d  BA={durations[2]}d"
+    )
+
+    # Animation auf Frame 0 zurücksetzen und neu zeichnen
     sim_state["current_frame"] = 0
     sim_state["playing"]       = False
     btn_play.label.set_text("▶  Play")
@@ -701,112 +914,108 @@ def toggle_play(event):
     """
     Schaltet die Animation zwischen Play und Pause um.
 
-    Wenn die Animation läuft, wird sie durch diesen Aufruf pausiert.
-    Wenn sie pausiert ist, wird sie gestartet.
-    Wurde das Ende der Simulation erreicht (letzter Frame), springt ein
-    erneuter Play-Klick automatisch zu Frame 0 zurück.
+    Läuft die Animation, wird sie pausiert. Ist sie pausiert, wird sie gestartet.
+    Hat die Animation ihren letzten Frame erreicht, springt ein erneuter
+    Play-Klick automatisch zu Frame 0 zurück und startet von vorne.
 
-    Wurde noch keine Simulation berechnet, passiert nichts (Sicherheitscheck).
+    Wurde noch keine Simulation berechnet (histories[0] ist None), passiert nichts.
 
     Parameter:
-        event: Matplotlib-Button-Klick-Event (wird nicht weiter ausgewertet).
+        event: Matplotlib-Button-Klick-Event (Inhalt wird nicht ausgewertet).
 
     Rückgabe:
         None.
     """
-    # Keine Simulation vorhanden? Dann nichts tun
+    # Sicherheitscheck: Noch keine Simulation vorhanden
     if sim_state["histories"][0] is None:
         return
 
     if sim_state["playing"]:
-        # Animation pausieren
+        # Animation anhalten
         sim_state["playing"] = False
         btn_play.label.set_text("▶  Play")
     else:
-        # Am Ende der Simulation? Dann von vorne beginnen
+        # Am Ende angelangt → von vorne starten
         if sim_state["current_frame"] >= sim_state["max_frames"]:
             sim_state["current_frame"] = 0
-        # Animation starten
         sim_state["playing"] = True
         btn_play.label.set_text("⏸  Pause")
 
-    # Canvas neu zeichnen (aktualisiert Beschriftung des Buttons)
+    # Button-Beschriftung sofort aktualisieren
     fig.canvas.draw_idle()
 
 
 def on_reset(event):
     """
-    Stoppt die laufende Animation und berechnet alle drei Simulationen neu.
+    Stoppt die laufende Animation und berechnet alle drei Simulationen sofort neu.
 
-    Diese Funktion sollte nach einer Slider-Änderung aufgerufen werden.
-    Sie liest die neuen Parameterwerte aus, erstellt neue Graphen und führt
-    alle Simulationen vollständig durch. Anschließend wird Frame 0 angezeigt.
+    Liest die aktuellen Slider-Werte aus, erstellt neue Netzwerke und führt
+    vollständige Simulationen durch. Danach wird Frame 0 angezeigt.
+    Wird durch den '↺ Reset'-Button ausgelöst.
 
     Parameter:
-        event: Matplotlib-Button-Klick-Event (wird nicht weiter ausgewertet).
+        event: Matplotlib-Button-Klick-Event (Inhalt wird nicht ausgewertet).
 
     Rückgabe:
         None.
     """
-    # Laufende Animation zuerst stoppen
+    # Laufende Animation stoppen
     sim_state["playing"] = False
     btn_play.label.set_text("▶  Play")
-    # Alle drei Simulationen neu aufbauen und zeichnen
+    # Simulationen mit aktuellen Parameterwerten neu aufbauen
     build_all_simulations()
 
 
 def on_extended_toggle(label):
     """
-    Callback für die Extended-Mode-Checkbox – schaltet den Modus ein oder aus
-    und berechnet die Simulationen sofort neu.
+    Callback für die Extended-Mode-Checkbox.
 
-    Im Extended Mode werden zwei saisonale Umweltfaktoren aktiviert:
-        Wintereffekt (Tage 1–90 und 350–365):
-            Genesungsrate gamma wird um 20 % gesenkt (gamma × 0.8).
-        Feiertagseffekt (±3 Tage um die Feiertage in HOLIDAYS):
-            Infektionsrate beta wird um 30 % erhöht (beta × 1.3).
+    Schaltet den Extended Mode ein oder aus und löst sofort eine Neuberechnung
+    aller drei Simulationen aus, damit die saisonalen Effekte (Wintereffekt und
+    Feiertagseffekt) sofort im Ergebnis sichtbar werden.
+
+    Extended Mode ein:
+        Wintereffekt (Tage 1–90 und 350–365): gamma × 0.8
+        Feiertagseffekt (±3 Tage um HOLIDAYS): beta × 1.3
+    Extended Mode aus: beta und gamma unverändert.
 
     Parameter:
-        label (str): Bezeichnung der angeklickten Checkbox. Da nur eine
-                     Checkbox vorhanden ist, wird der Parameter nicht
-                     weiter ausgewertet.
+        label (str): Bezeichnung der angeklickten Checkbox (wird nicht ausgewertet,
+                     da nur eine Checkbox existiert).
 
     Rückgabe:
         None.
     """
-    # Aktuellen Zustand der Checkbox auslesen (get_status gibt eine Liste zurück)
+    # Aktuellen Checkbox-Status auslesen (get_status gibt Liste zurück)
     sim_state["extended_mode"] = chk_extended.get_status()[0]
-    # Simulation mit dem neuen Modus neu berechnen und zeichnen
+    # Simulation mit neuem Modus sofort neu berechnen
     build_all_simulations()
 
 
 def advance_animation(frame):
     """
-    Animationsschritt-Callback – wird von FuncAnimation in jedem Zeitintervall
-    aufgerufen und rückt die Animation um einen Frame vor.
+    Animations-Callback – wird von FuncAnimation alle 450 ms aufgerufen.
 
-    Wenn die Animation aktiv ist (sim_state["playing"] == True), wird
-    current_frame um 1 erhöht und draw_frame() aufgerufen. Hat die Simulation
-    ihr Ende erreicht, wird die Animation automatisch gestoppt und der
-    Play-Button zurückgesetzt.
+    Wenn die Animation läuft (playing == True), wird current_frame um 1
+    erhöht und draw_frame() für den neuen Frame aufgerufen. Beim Erreichen
+    des letzten Frames stoppt die Animation automatisch.
 
-    Diese Funktion läuft kontinuierlich im Hintergrund (alle 150 ms), führt
-    aber nur dann Aktionen aus, wenn playing == True ist.
+    Die Funktion läuft auch dann weiter, wenn playing == False ist, tut aber
+    in diesem Fall nichts (passiver Bereitschaftsmodus).
 
     Parameter:
-        frame (int): Von FuncAnimation automatisch übergebener interner Zähler.
-                     Wird hier ignoriert – der eigene Zähler sim_state["current_frame"]
-                     wird stattdessen verwendet.
+        frame (int): Von FuncAnimation übergebener interner Zähler.
+                     Wird nicht verwendet – sim_state["current_frame"] ist maßgeblich.
 
     Rückgabe:
         None.
     """
-    # Nur aktiv, wenn die Animation tatsächlich läuft
+    # Passiver Modus: nichts tun
     if not sim_state["playing"]:
         return
 
-    # Nächsten Frame anzeigen, solange noch Frames vorhanden sind
     if sim_state["current_frame"] < sim_state["max_frames"]:
+        # Nächsten Frame anzeigen
         sim_state["current_frame"] += 1
         draw_frame(sim_state["current_frame"])
     else:
@@ -816,20 +1025,31 @@ def advance_animation(frame):
         fig.canvas.draw_idle()
 
 
-# ── Callbacks an die Widgets verknüpfen ──────────────────────────────────────
+# ── Callbacks an Buttons und Checkbox verknüpfen ──────────────────────────────
 btn_play.on_clicked(toggle_play)
 btn_reset.on_clicked(on_reset)
 chk_extended.on_clicked(on_extended_toggle)
 
+# ── Live-Update: Jede Slider-Änderung löst sofortigen Neustart der Simulation aus ─
+# Die Lambda-Funktionen empfangen den neuen Slider-Wert (val), ignorieren ihn aber,
+# da build_all_simulations() selbst alle Slider direkt ausliest.
+# Hinweis: Bei großem N kann die Neuberechnung kurz (~0.5–1 s) dauern.
+slider_n.on_changed(lambda val: build_all_simulations())
+slider_degree.on_changed(lambda val: build_all_simulations())
+slider_beta.on_changed(lambda val: build_all_simulations())
+slider_gamma.on_changed(lambda val: build_all_simulations())
+slider_seed.on_changed(lambda val: build_all_simulations())
+
 # ── FuncAnimation einrichten ──────────────────────────────────────────────────
-# interval=150: Jeder Frame wird 150 ms lang angezeigt (~6–7 Frames/Sekunde)
-# cache_frame_data=False: Kein Caching, da der Zustand extern in sim_state verwaltet wird
-# Die Variable muss global gehalten werden, sonst wird das Objekt vom
-# Garbage Collector gelöscht und die Animation stoppt sofort.
-anim = FuncAnimation(fig, advance_animation, interval=150, cache_frame_data=False)
+# interval=450: Jeder Frame wird 450 ms lang angezeigt (~2 Frames/Sekunde).
+# Langsam genug, um Ausbreitungswellen in Netzwerk und Kurve visuell zu verfolgen.
+# cache_frame_data=False: kein Caching, Zustand wird in sim_state verwaltet.
+# Die Variable muss einer globalen Referenz zugewiesen werden, sonst löscht
+# der Garbage Collector das Objekt und die Animation stoppt sofort.
+anim = FuncAnimation(fig, advance_animation, interval=450, cache_frame_data=False)
 
 # ── Farbkodierungs-Legende ────────────────────────────────────────────────────
-# Erklärt die Bedeutung der Knotenfarben im unteren rechten Bereich
+# Erklärt die Knotenfarben und Kurvenfarben unten rechts im Fenster
 legend_patches = [
     mpatches.Patch(color=COLOR_S, label="S – Anfällig (Susceptible)"),
     mpatches.Patch(color=COLOR_I, label="I – Infiziert (Infected)"),
@@ -846,13 +1066,30 @@ fig.legend(
 # ── Bedienungshinweis am unteren Rand ────────────────────────────────────────
 fig.text(
     0.50, 0.005,
-    "① Slider anpassen   ②  '↺ Reset' klicken   ③  '▶ Play' klicken",
-    ha="center", va="bottom", fontsize=8, color="#666666",
+    "① Slider ziehen = Live-Update   ②  '↺ Reset' = Neustart   ③  '▶ Play' = Animation",
+    ha="center", va="bottom", fontsize=8, color="#555555",
+)
+
+# ── Seed-Info-Textfeld ────────────────────────────────────────────────────────
+# Zeigt dynamisch die vom Seed festgelegten Startparameter an:
+#   - Startdatum der Infektion (Kalendertag + Jahreszeit)
+#   - Knoten-ID des Patient Zero
+#   - Individuelle Simulationsdauer jeder Topologie
+# Positioniert in der Mitte zwischen Sliders (enden bei x≈0.36) und
+# Buttons (beginnen bei x=0.62) – kein Überlapp mit anderen Elementen.
+# Wird durch build_all_simulations() bei jedem Reset mit set_text() aktualisiert.
+seed_info_text = fig.text(
+    0.40, 0.37,
+    "Seed-Parameter werden nach erstem Reset angezeigt.",
+    ha="left", va="top",
+    fontsize=7.5, family="monospace",
+    color="#333333",
+    bbox=dict(boxstyle="round,pad=0.4", facecolor="#f0f0f8", alpha=0.88),
 )
 
 # ── Initiale Simulation beim Programmstart ────────────────────────────────────
-# Beim Start der Anwendung wird sofort eine Simulation mit den Standard-Sliderwerten
-# berechnet und dargestellt, damit das Fenster nicht leer ist.
+# Sofort beim Start mit den Standard-Sliderwerten berechnen und anzeigen,
+# damit das Fenster nicht leer erscheint und seed_info_text befüllt wird.
 build_all_simulations()
 
 # ── Matplotlib-Fenster öffnen und Ereignisschleife starten ───────────────────
