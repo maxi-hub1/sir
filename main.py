@@ -1,297 +1,341 @@
 # =============================================================================
-# SIR-Netzwerksimulation – einzelnes prozedurales Skript
+# Network-based SIR simulation - single procedural script
 # =============================================================================
-# Dieses Skript simuliert die Ausbreitung einer Epidemie nach dem SIR-Modell
-# (Susceptible–Infected–Recovered) auf drei verschiedenen Netzwerktopologien.
-# Alle drei Simulationen laufen parallel und können interaktiv über Slider
-# und Schaltflächen gesteuert werden.
-# =============================================================================
-
-
-# =============================================================================
-# ABSCHNITT 1: IMPORTS UND KONFIGURATION
+# This script simulates the spread of an epidemic with the SIR model
+# (Susceptible-Infected-Recovered) on three different network topologies.
+# All three simulations run in parallel and can be controlled interactively
+# with sliders, buttons, and a checkbox.
 # =============================================================================
 
-# random: Einfacher Zufallszahlengenerator – ermöglicht reproduzierbare
-# Simulationen über den Seed-Parameter.  Kein numpy nötig, da nur einzelne
-# Zufallsziehungen (randint, choice, random) durchgeführt werden.
+
+# =============================================================================
+# SECTION 1: IMPORTS AND CONFIGURATION
+# =============================================================================
+
+# random: Simple pseudo-random number generator support.
+# It is used through local Random(seed) instances so that the full simulation
+# stays reproducible and does not depend on uncontrolled global random calls.
 import random
 
-# numpy: Bibliothek für numerische Berechnungen. Hier vor allem für eventuelle
-# Array-Operationen und Erweiterbarkeit; wird bei Zähler-Operationen genutzt.
-import numpy as np
-
-# networkx: Bibliothek zur Erstellung, Analyse und Visualisierung von Graphen.
-# Stellt Generatoren für Erdős-Rényi, Watts-Strogatz und Barabási-Albert bereit
-# und kann Netzwerke direkt in matplotlib-Achsen zeichnen.
+# networkx: Library for graph creation, graph algorithms, and graph drawing.
+# It provides built-in generators for Erdős-Rényi, Watts-Strogatz, and
+# Barabási-Albert networks.
 import networkx as nx
 
-# matplotlib.pyplot: Haupt-Zeichenbibliothek – erstellt Fenster, Subplots
-# und alle grafischen Elemente.
+# matplotlib.pyplot: Main plotting interface used to create the window,
+# figure, axes, and all plotted visual elements.
 import matplotlib.pyplot as plt
 
-# matplotlib.patches: Ermöglicht das Zeichnen farbiger Rechtecke für die Legende.
+# matplotlib.patches: Used to create colored legend entries for the S, I, R
+# state colors shown in the visualization.
 import matplotlib.patches as mpatches
 
-# matplotlib.widgets: Stellt interaktive UI-Elemente bereit:
-# Slider (schiebbare Regler), Button (Schaltflächen), CheckButtons (Checkboxen).
+# matplotlib.widgets: Provides the interactive UI controls such as sliders,
+# buttons, and checkboxes.
 import matplotlib.widgets as mwidgets
 
-# FuncAnimation: Ruft eine Callback-Funktion wiederholt in festem Zeitabstand auf.
-# Damit wird die Frame-für-Frame-Animation realisiert.
+# FuncAnimation: Calls an update function repeatedly after a fixed interval,
+# which is used here to advance the animation frame by frame.
 from matplotlib.animation import FuncAnimation
 
-# GridSpec: Ermöglicht ein flexibles Rasterlayout für Subplots mit unterschiedlichen
-# Höhenverhältnissen – hier 2 Zeilen (Netzwerke groß oben, Kurven kompakt unten)
-# und 3 Spalten, eine Spalte pro Topologie.
+# GridSpec: Provides a flexible subplot layout with multiple rows and columns.
+# It is used here to place network views in the first row and epidemic curves
+# in the second row.
 from matplotlib.gridspec import GridSpec
 
 
-# ── Zustandskonstanten ───────────────────────────────────────────────────────
-STATE_S = "S"   # Anfällig  (Susceptible):  gesund, kann infiziert werden
-STATE_I = "I"   # Infiziert (Infected):     krank, kann andere anstecken
-STATE_R = "R"   # Genesen   (Recovered):    immun, kann nicht mehr erkranken
+# -- State constants -----------------------------------------------------------
+STATE_S = "S"  # Susceptible: healthy and able to become infected
+STATE_I = "I"  # Infected: currently infectious
+STATE_R = "R"  # Recovered: immune and no longer infectious
 
-# ── Farbkonstanten für die Knotenvisualisierung ──────────────────────────────
-COLOR_S = "#1f77b4"   # Blau  – anfällige Knoten
-COLOR_I = "#d62728"   # Rot   – infizierte Knoten
-COLOR_R = "#2ca02c"   # Grün  – genesene Knoten
+# -- Color constants for node and curve visualization --------------------------
+COLOR_S = "#1f77b4"  # Blue for susceptible
+COLOR_I = "#d62728"  # Red for infected
+COLOR_R = "#2ca02c"  # Green for recovered
 
-# ── Feiertage als Tages-Nummern im Jahr (1 = 1. Januar, 365 = 31. Dezember) ─
-# Neujahr (1), Karneval (~52), Ostermontag (~105), Pfingstmontag (~155),
-# Heiligabend (358), 1. Weihnachtstag (359)
+# -- Holiday days in the year (1 = Jan 1, 365 = Dec 31) -----------------------
+# These dates are used in extended mode to temporarily increase beta because
+# contact frequency is assumed to be higher around holidays.
 HOLIDAYS = [1, 52, 105, 155, 358, 359]
 
-# Anzahl der Puffer-Tage rund um jeden Feiertag (erhöhtes Kontaktrisiko)
+# Number of extra days around each holiday during which the holiday effect
+# remains active.
 HOLIDAY_BUFFER = 3
 
-# ── Namen der drei Topologien für Achsentitel ────────────────────────────────
-TOPOLOGY_NAMES = ["Erdős-Rényi", "Watts-Strogatz", "Barabási-Albert"]
+# -- Display names for the three network topologies ----------------------------
+TOPOLOGY_NAMES = ["Erdos-Renyi", "Watts-Strogatz", "Barabasi-Albert"]
 
-# ── Deutsche Monatsabkürzungen (für die X-Achse der Verlaufskurven) ──────────
-# Die Reihenfolge entspricht den Monaten Januar bis Dezember.
+# -- English month abbreviations for the epidemic curve x-axis -----------------
 MONTH_NAMES = [
-    "Jan", "Feb", "Mär", "Apr", "Mai", "Jun",
-    "Jul", "Aug", "Sep", "Okt", "Nov", "Dez",
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
 ]
 
-# ── Erster Kalendertag jedes Monats (1 = 1. Jan, 335 = 1. Dez) ───────────────
-# Wird genutzt, um aus einem Kalendertag den zugehörigen Monatsnamen zu bestimmen
-# und Tick-Positionen auf der X-Achse der Verlaufskurven zu platzieren.
+# -- First calendar day of each month in a 365-day year -----------------------
 MONTH_START_DAYS = [1, 32, 60, 91, 121, 152, 182, 213, 244, 274, 305, 335]
 
-# ── Schriftgröße global setzen ───────────────────────────────────────────────
+# -- Global font size ----------------------------------------------------------
 plt.rcParams["font.size"] = 9
 
 
 # =============================================================================
-# ABSCHNITT 2: GRAPHEN-GENERIERUNG
+# SECTION 2: GRAPH GENERATION
 # =============================================================================
 
 
 def create_erdos_renyi(n, avg_degree, seed):
     """
-    Erstellt einen Erdős-Rényi-Zufallsgraphen.
+    Create an Erdős-Rényi random graph.
 
-    Bei diesem Modell wird jede mögliche Kante zwischen zwei Knoten unabhängig
-    mit derselben Wahrscheinlichkeit p gezogen. Die Wahrscheinlichkeit p wird
-    so aus dem gewünschten Durchschnittsgrad berechnet:
+    Internally, this function computes the edge probability p from the desired
+    average degree. In an Erdős-Rényi graph, every possible edge between two
+    different nodes is included independently with the same probability p.
+
+    The probability is derived from the target average degree with:
 
         p = avg_degree / (n - 1)
 
-    Das bedeutet: Hat ein Knoten n-1 potenzielle Nachbarn, verbindet ihn p mit
-    jedem davon, was im Erwartungswert avg_degree Kanten ergibt.
+    This means that if a node has n - 1 possible neighbors, the expected number
+    of actual neighbors becomes approximately avg_degree.
 
-    Parameter:
-        n          (int)  : Anzahl der Knoten im Graphen.
-        avg_degree (float): Gewünschter durchschnittlicher Grad (Kanten pro Knoten).
-        seed       (int)  : Zufallsinitialisierung für Reproduzierbarkeit.
+    Parameters:
+        n (int):
+            Total number of nodes in the graph.
+        avg_degree (float):
+            Desired average number of edges per node.
+        seed (int):
+            Seed forwarded to the NetworkX graph generator so that the graph
+            structure is reproducible for the same input seed.
 
-    Rückgabe:
-        nx.Graph: Fertig erstellter Erdős-Rényi-Graph.
+    Returns:
+        nx.Graph:
+            A generated Erdős-Rényi graph with n nodes and probability p.
     """
-    # Verbindungswahrscheinlichkeit aus dem gewünschten Durchschnittsgrad berechnen
+    # Compute the connection probability from the requested average degree.
     p = avg_degree / max(1, n - 1)
-    # Auf gültigen Bereich [0, 1] begrenzen (kann bei sehr kleinem n > 1 werden)
+
+    # Clamp the probability to the valid interval [0, 1].
     p = max(0.0, min(1.0, p))
+
     return nx.erdos_renyi_graph(n, p, seed=seed)
 
 
 def create_watts_strogatz(n, avg_degree, seed):
     """
-    Erstellt einen Watts-Strogatz-Kleinwelt-Graphen.
+    Create a Watts-Strogatz small-world graph.
 
-    Das Modell beginnt mit einem regulären Ring, in dem jeder Knoten mit seinen
-    k nächsten Nachbarn verbunden ist (k/2 links, k/2 rechts). Anschließend
-    wird jede Kante mit Wahrscheinlichkeit 0.1 zufällig umgeleitet.
+    Internally, the function first converts the requested average degree into
+    the parameter k of the Watts-Strogatz model. The model starts from a ring
+    lattice in which each node is connected to its k nearest neighbors, then
+    rewires edges with probability 0.1.
 
-    Das Ergebnis ist ein Netzwerk mit hohem Clusterkoeffizient (enge Gruppen)
-    und kurzen Pfaden zwischen beliebigen Knoten – der sogenannte Kleinwelt-Effekt.
+    The value k must be an even positive integer. This function therefore:
+        1. Rounds avg_degree to the nearest integer.
+        2. Enforces a minimum of 2.
+        3. Adjusts k to be even.
+        4. Clamps k so that it never exceeds n - 1.
 
-    Wichtig: Der Parameter k MUSS eine gerade positive Ganzzahl sein.
-    Die Funktion rundet avg_degree entsprechend und stellt dies sicher.
+    Parameters:
+        n (int):
+            Total number of nodes in the graph.
+        avg_degree (float):
+            Desired average degree. It is converted internally to the valid
+            Watts-Strogatz parameter k.
+        seed (int):
+            Seed forwarded to the NetworkX graph generator so that the graph
+            structure is reproducible for the same input seed.
 
-    Parameter:
-        n          (int)  : Anzahl der Knoten im Graphen.
-        avg_degree (float): Gewünschter Durchschnittsgrad; wird intern auf die
-                            nächste gerade Ganzzahl gerundet.
-        seed       (int)  : Zufallsinitialisierung für Reproduzierbarkeit.
-
-    Rückgabe:
-        nx.Graph: Fertig erstellter Watts-Strogatz-Graph.
+    Returns:
+        nx.Graph:
+            A generated Watts-Strogatz graph with rewiring probability 0.1.
     """
-    # Auf nächste Ganzzahl runden, mindestens 2
+    # Round to the nearest integer and enforce a minimum of 2.
     k = max(2, round(avg_degree))
-    # k muss gerade sein (Anforderung des Algorithmus: k/2 links, k/2 rechts)
+
+    # k must be even in the Watts-Strogatz model.
     if k % 2 != 0:
         k += 1
-    # k darf n-1 nicht überschreiten (sonst vollständiger Graph)
+
+    # k cannot exceed n - 1.
     k = min(k, n - 1)
-    # Nach Begrenzung erneut auf Geradzahligkeit prüfen
+
+    # Re-check evenness after clamping.
     if k % 2 != 0:
         k -= 1
-    # Absolutes Minimum sicherstellen
+
+    # Enforce the absolute minimum once more after all corrections.
     k = max(2, k)
+
     return nx.watts_strogatz_graph(n, k, 0.1, seed=seed)
 
 
 def create_barabasi_albert(n, avg_degree, seed):
     """
-    Erstellt einen Barabási-Albert-Skalierungsfreien-Graphen.
+    Create a Barabási-Albert scale-free graph.
 
-    Dieses Wachstumsmodell fügt Knoten iterativ hinzu. Jeder neue Knoten
-    verbindet sich mit m bestehenden Knoten, wobei Knoten mit vielen Kanten
-    bevorzugt gewählt werden (Preferential Attachment / "die Reichen werden
-    reicher"). Das Ergebnis ist eine Power-Law-Gradverteilung mit wenigen
-    hochvernetzten Hubs – typisch für das Internet oder soziale Netzwerke.
+    Internally, the function converts the requested average degree into the
+    attachment parameter m. In the Barabási-Albert model, each new node is
+    attached to m already existing nodes, with preference toward nodes that
+    already have many connections.
 
-    Der Parameter m entspricht in etwa der Hälfte des gewünschten
-    Durchschnittsgrades.
+    A common approximation is:
+        m ≈ avg_degree / 2
 
-    Parameter:
-        n          (int)  : Anzahl der Knoten im Graphen.
-        avg_degree (float): Gewünschter Durchschnittsgrad; wird intern als
-                            m = round(avg_degree / 2) interpretiert.
-        seed       (int)  : Zufallsinitialisierung für Reproduzierbarkeit.
+    Therefore, this function:
+        1. Computes m from avg_degree / 2.
+        2. Rounds it to the nearest integer.
+        3. Enforces a minimum of 1.
+        4. Clamps it so that m never exceeds n - 1.
 
-    Rückgabe:
-        nx.Graph: Fertig erstellter Barabási-Albert-Graph.
+    Parameters:
+        n (int):
+            Total number of nodes in the graph.
+        avg_degree (float):
+            Desired average degree, internally converted into the attachment
+            parameter m.
+        seed (int):
+            Seed forwarded to the NetworkX graph generator so that the graph
+            structure is reproducible for the same input seed.
+
+    Returns:
+        nx.Graph:
+            A generated Barabási-Albert graph.
     """
-    # Anzahl neuer Kanten pro hinzugefügtem Knoten: halber Durchschnittsgrad
+    # Use half the average degree as the attachment parameter.
     m = max(1, round(avg_degree / 2))
-    # m darf n-1 nicht überschreiten
+
+    # m cannot exceed n - 1.
     m = min(m, n - 1)
+
     return nx.barabasi_albert_graph(n, m, seed=seed)
 
 
 # =============================================================================
-# ABSCHNITT 3: EPIDEMIE-LOGIK
+# SECTION 3: EPIDEMIC LOGIC
 # =============================================================================
 
 
 def is_winter(day):
     """
-    Prüft, ob ein gegebener Kalendertag in den Winter fällt.
+    Check whether a calendar day belongs to the winter period.
 
-    Winter ist definiert als die kalten Monate Dezember bis März, was grob
-    den Tagen 1–90 (Januar bis Ende März) und 350–365 (Mitte Dezember bis
-    Jahresende) entspricht. In dieser Jahreszeit ist das Immunsystem geschwächt,
-    was im Extended Mode die Genesungsrate senkt.
+    Internally, the function normalizes the input to the interval 1..365 so
+    that it still works correctly if a larger day number is passed in.
+    Winter is defined here as:
+        - day 1 to day 90
+        - day 350 to day 365
 
-    Der Eingabewert wird automatisch auf den Bereich 1–365 normiert, damit die
-    Funktion auch mit Werten umgehen kann, die über 365 hinausgehen (zyklische
-    Simulation über Jahresgrenzen hinweg).
+    This definition is later used in extended mode to reduce the daily recovery
+    rate by 20 percent.
 
-    Parameter:
-        day (int): Kalendertag des Jahres (wird auf 1–365 normiert, falls größer).
+    Parameters:
+        day (int):
+            Calendar day of the year. Values outside 1..365 are wrapped into
+            that interval with modular arithmetic.
 
-    Rückgabe:
-        bool: True wenn der Tag im Winter liegt, sonst False.
+    Returns:
+        bool:
+            True if the normalized day is treated as winter, otherwise False.
     """
-    # Normierung auf 1–365 (zyklisch)
-    d = (day - 1) % 365 + 1
-    # Winter: Anfang des Jahres (Jan–März) und Ende des Jahres (Dez)
-    return d <= 90 or d >= 350
+    # Normalize the given day into the range 1..365.
+    normalized_day = (day - 1) % 365 + 1
+
+    # Winter is defined as the beginning and end of the year.
+    return normalized_day <= 90 or normalized_day >= 350
 
 
 def is_holiday_period(day):
     """
-    Prüft, ob ein Kalendertag in den Pufferzeitraum eines Feiertags fällt.
+    Check whether a calendar day falls into a holiday effect window.
 
-    Ein Tag gilt als „Feiertags-Puffertag", wenn er höchstens HOLIDAY_BUFFER
-    Tage von einem der definierten Feiertage in der Liste HOLIDAYS entfernt ist.
-    An solchen Tagen wird von erhöhten sozialen Kontakten ausgegangen
-    (Familienfeiern, Reisen, Partys), was die Infektionswahrscheinlichkeit steigert.
+    Internally, the function normalizes the day to 1..365 and then checks
+    whether that day is at most HOLIDAY_BUFFER days away from any holiday in
+    HOLIDAYS. It also checks wrap-around distances across the end of the year,
+    so days near New Year are handled correctly.
 
-    Jahreszyklische Überschneidungen werden berücksichtigt: Der 1. Januar liegt
-    beispielsweise auch in der Nähe des 31. Dezembers (3 Tage Abstand).
+    This function is used in extended mode to increase beta by 30 percent
+    during holiday periods.
 
-    Parameter:
-        day (int): Kalendertag des Jahres (wird auf 1–365 normiert).
+    Parameters:
+        day (int):
+            Calendar day of the year. Values outside 1..365 are wrapped into
+            that interval with modular arithmetic.
 
-    Rückgabe:
-        bool: True wenn der Tag ein Feiertags-Puffertag ist, sonst False.
+    Returns:
+        bool:
+            True if the day lies inside a holiday influence window,
+            otherwise False.
     """
-    # Normierung auf 1–365
-    d = (day - 1) % 365 + 1
+    # Normalize the given day into the range 1..365.
+    normalized_day = (day - 1) % 365 + 1
+
     for holiday in HOLIDAYS:
-        # Direkten Abstand zum Feiertag prüfen
-        if abs(d - holiday) <= HOLIDAY_BUFFER:
+        # Direct distance inside the same year.
+        if abs(normalized_day - holiday) <= HOLIDAY_BUFFER:
             return True
-        # Jahreszyklus berücksichtigen (z.B. Tag 363 → 3 Tage vor Tag 1)
-        if abs(d - holiday + 365) <= HOLIDAY_BUFFER:
+
+        # Wrapped distances across the year boundary.
+        if abs(normalized_day - holiday + 365) <= HOLIDAY_BUFFER:
             return True
-        if abs(d - holiday - 365) <= HOLIDAY_BUFFER:
+        if abs(normalized_day - holiday - 365) <= HOLIDAY_BUFFER:
             return True
+
     return False
 
 
 def get_effective_params(beta, gamma_base, day, extended_mode):
     """
-    Berechnet die effektiven Epidemieparameter für einen bestimmten Kalendertag.
+    Compute the effective epidemic parameters for one calendar day.
 
-    Im Basismodus werden beta und gamma_base unverändert zurückgegeben.
-    Im Extended Mode werden zwei saisonale Umweltfaktoren angewandt:
+    Internally, the function starts from the base parameters beta and
+    gamma_base. If extended_mode is disabled, the values are returned
+    unchanged.
 
-        Wintereffekt (Tage 1–90 und 350–365):
-            Die Genesungsrate gamma wird um 20 % gesenkt (× 0.8).
-            Begründung: Kältestress und Lichtmangel schwächen das Immunsystem.
+    If extended_mode is enabled, two environmental effects are applied:
+        1. Winter effect:
+           If the day is considered winter, gamma is reduced by 20 percent.
+        2. Holiday effect:
+           If the day is inside a holiday period, beta is increased by
+           30 percent.
 
-        Feiertagseffekt (±HOLIDAY_BUFFER Tage um einen Feiertag):
-            Die Infektionswahrscheinlichkeit beta wird um 30 % erhöht (× 1.3).
-            Begründung: Familienfeiern und Reisen erhöhen die Kontaktzahl.
+    Both values are clamped to the valid probability range [0.0, 1.0]
+    before they are returned.
 
-    Beide Ergebniswerte werden abschließend auf den gültigen Bereich [0.0, 1.0]
-    begrenzt, damit keine ungültigen Wahrscheinlichkeiten entstehen.
+    Parameters:
+        beta (float):
+            Base infection probability per contact in the interval 0..1.
+        gamma_base (float):
+            Base recovery probability per day in the interval 0..1.
+        day (int):
+            Calendar day used to determine winter and holiday effects.
+        extended_mode (bool):
+            If True, winter and holiday effects are applied. If False,
+            the base parameters are returned unchanged.
 
-    Parameter:
-        beta         (float): Basis-Infektionswahrscheinlichkeit pro Kontakt (0–1).
-        gamma_base   (float): Basis-Genesungsrate pro Tag (0–1).
-        day          (int)  : Aktueller Kalendertag (1–365) für Saisonberechnung.
-        extended_mode (bool): Wenn True, werden saisonale Effekte angewandt.
-
-    Rückgabe:
-        tuple[float, float]: (beta_eff, gamma_eff) – die effektiven Parameterwerte
-                              für diesen Simulationstag.
+    Returns:
+        tuple[float, float]:
+            A tuple (beta_eff, gamma_eff) containing the effective infection
+            and recovery probabilities for the given day.
     """
-    # Im Basismodus: Parameter unverändert zurückgeben
+    # In basic mode, return the parameters unchanged.
     if not extended_mode:
         return beta, gamma_base
 
-    # Arbeitskopien anlegen, damit die Eingabewerte nicht verändert werden
-    beta_eff  = beta
+    # Work on local copies so the input values stay unchanged.
+    beta_eff = beta
     gamma_eff = gamma_base
 
-    # Wintereffekt: Genesungsrate um 20 % senken
+    # Winter decreases the recovery probability.
     if is_winter(day):
         gamma_eff *= 0.8
 
-    # Feiertagseffekt: Infektionsrate um 30 % erhöhen
+    # Holiday periods increase the infection probability.
     if is_holiday_period(day):
         beta_eff *= 1.3
 
-    # Auf gültigen Wertebereich [0, 1] begrenzen
-    beta_eff  = max(0.0, min(1.0, beta_eff))
+    # Clamp both probabilities to the valid range [0, 1].
+    beta_eff = max(0.0, min(1.0, beta_eff))
     gamma_eff = max(0.0, min(1.0, gamma_eff))
 
     return beta_eff, gamma_eff
@@ -299,422 +343,454 @@ def get_effective_params(beta, gamma_base, day, extended_mode):
 
 def simulate_step(states, graph, beta_eff, gamma_eff, rng):
     """
-    Führt einen einzelnen synchronen SIR-Simulationsschritt durch.
+    Execute one synchronous SIR simulation step.
 
-    Das Verfahren verwendet ein synchrones Zwei-Phasen-Update, das sicherstellt,
-    dass alle Zustandsänderungen gleichzeitig in Kraft treten und die Reihenfolge
-    der Knotenverarbeitung keinen Einfluss auf das Ergebnis hat:
+    Internally, the function performs a two-phase update:
 
-        Phase 1 – Evaluation:
-            Für jeden infizierten Knoten (STATE_I) wird geprüft:
-            a) Jeder anfällige Nachbar (STATE_S) wird mit Wahrscheinlichkeit
-               beta_eff in next_states auf STATE_I gesetzt.
-            b) Der infizierte Knoten selbst genest mit Wahrscheinlichkeit
-               gamma_eff (next_states[node] = STATE_R).
-            Wichtig: Während dieser Phase wird nur `states` gelesen (unveränderlich)
-            und nur `next_states` geschrieben. So „sehen" alle Knoten noch den
-            Zustand vom Anfang des Tages.
+        Phase 1 - Evaluation:
+            A copy of the current state dictionary is created as next_states.
+            For every infected node:
+                - each susceptible neighbor can become infected with
+                  probability beta_eff
+                - the infected node itself can recover with probability
+                  gamma_eff
 
-        Phase 2 – Commit:
-            `next_states` wird als neues Zustands-Dictionary zurückgegeben.
-            Alle Änderungen treten gleichzeitig in Kraft.
+            During this phase, only the original states dictionary is read,
+            while all changes are written into next_states.
 
-    Parameter:
-        states     (dict)        : Aktuelles Zustands-Dict {Knoten-ID (int): Zustand (str)}.
-                                   Wird nicht verändert (read-only in Phase 1).
-        graph      (nx.Graph)    : Netzwerkgraph; seine Kanten definieren, wer wen
-                                   kontaktieren kann.
-        beta_eff   (float)       : Effektive Infektionswahrscheinlichkeit für heute.
-        gamma_eff  (float)       : Effektive Genesungsrate für heute.
-        rng        (random.Random): Initialisierter Zufallsgenerator für reproduzierbare
-                                   Ergebnisse.
+        Phase 2 - Commit:
+            The function returns next_states as the complete updated state
+            snapshot for the next simulation day.
 
-    Rückgabe:
-        dict: Neues Zustands-Dictionary {Knoten-ID: Zustand} nach diesem Schritt.
+    This approach guarantees synchronous behavior. It prevents the update order
+    of nodes from changing the result within the same day.
+
+    Parameters:
+        states (dict):
+            Dictionary of the current node states in the form
+            {node_id: state_string}.
+        graph (nx.Graph):
+            Network graph defining which nodes are connected.
+        beta_eff (float):
+            Effective infection probability for the current day.
+        gamma_eff (float):
+            Effective recovery probability for the current day.
+        rng (random.Random):
+            Local pseudo-random generator used for all stochastic decisions
+            inside this simulation run. Using this local generator is essential
+            for strict reproducibility.
+
+    Returns:
+        dict:
+            A new dictionary with the updated node states after one synchronous
+            simulation step.
     """
-    # Phase 1: next_states als Kopie des aktuellen Zustands initialisieren
-    # Alle Knoten behalten zunächst ihren alten Zustand
+    # Start from a copy so all updates stay synchronous.
     next_states = dict(states)
 
     for node in graph.nodes():
-        # Nur infizierte Knoten können andere anstecken oder selber genesen
+        # Only infected nodes can infect neighbors or recover.
         if states[node] != STATE_I:
             continue
 
-        # Alle Nachbarn dieses infizierten Knotens prüfen
+        # Try to infect susceptible neighbors.
         for neighbor in graph.neighbors(node):
-            # Nur anfällige Nachbarn können neu infiziert werden
-            # Wichtig: states[neighbor] lesen, NICHT next_states[neighbor]!
             if states[neighbor] == STATE_S:
-                # Zufallszahl ziehen: liegt sie unter beta_eff, wird infiziert
                 if rng.random() <= beta_eff:
                     next_states[neighbor] = STATE_I
 
-        # Genesungsversuch: mit Wahrscheinlichkeit gamma_eff genest der Knoten
+        # Try to recover the infected node.
         if rng.random() <= gamma_eff:
             next_states[node] = STATE_R
 
-    # Phase 2: neuen Zustand zurückgeben (synchrones Commit)
     return next_states
 
 
 def run_simulation(graph, beta, gamma_base, seed, extended_mode):
     """
-    Führt eine vollständige SIR-Simulation auf einem Netzwerkgraphen durch
-    und gibt den kompletten Verlauf aller Tageszustände zurück.
+    Run a complete SIR simulation on one graph and return its full history.
 
-    Ablauf:
-        1.  Den Zufallsgenerator mit dem Seed initialisieren.
-        2.  Startdatum (Kalendertag 1–365) zufällig ziehen.
-        3.  Patient Zero (erster Infizierter) zufällig aus allen Knoten wählen.
-        4.  Alle anderen Knoten auf STATE_S (anfällig) setzen.
-        5.  Anfangszustand als ersten History-Eintrag speichern (Frame 0).
-        6.  Schleife über maximal 365 Tage:
-            a) Aktuellen Kalendertag berechnen (zyklisch 1–365).
-            b) Effektive Parameter (beta_eff, gamma_eff) bestimmen.
-            c) simulate_step() aufrufen → neuen Zustand berechnen.
-            d) Zustand in der History speichern.
-            e) Frühzeitig abbrechen, wenn keine Infizierten mehr vorhanden sind.
+    Internally, this function guarantees deterministic stochastic behavior by
+    creating exactly one local pseudo-random generator from the given seed:
 
-    Parameter:
-        graph         (nx.Graph): Netzwerkgraph, auf dem die Simulation läuft.
-        beta          (float)   : Basis-Infektionswahrscheinlichkeit (0–1).
-        gamma_base    (float)   : Basis-Genesungsrate (0–1).
-        seed          (int)     : Seed für Zufallsgenerator, Startdatum und Patient Zero.
-                                  Gleicher Seed → identische Simulation.
-        extended_mode (bool)    : True = Saisonale Effekte aktiv (Jahreszeit, Feiertage).
+        rng = random.Random(seed)
 
-    Rückgabe:
+    This local generator is created before the outbreak start day and patient
+    zero are chosen. Therefore, for the same graph structure and the same seed:
+        - start_day is always identical
+        - patient_zero is always identical
+        - all later random infection and recovery decisions are also identical
+
+    No uncontrolled global random calls are used inside this function.
+
+    The procedure is:
+        1. Create a local random generator from the seed.
+        2. Draw the outbreak start day from 1..365.
+        3. Draw patient zero from the graph nodes.
+        4. Initialize all nodes as susceptible.
+        5. Infect patient zero.
+        6. Store the initial state as history entry 0.
+        7. Simulate up to 365 daily steps.
+        8. Stop early if no infected nodes remain.
+
+    Parameters:
+        graph (nx.Graph):
+            Network graph on which the epidemic runs.
+        beta (float):
+            Base infection probability in the interval 0..1.
+        gamma_base (float):
+            Base recovery probability in the interval 0..1.
+        seed (int):
+            The single central seed for this simulation run. It determines the
+            local RNG, the outbreak start day, the choice of patient zero, and
+            all later stochastic epidemic events.
+        extended_mode (bool):
+            If True, winter and holiday effects modify beta and gamma during
+            the run. If False, the base parameters are used throughout.
+
+    Returns:
         tuple[list, int, int]:
-            - history (list)      : Liste von Tupeln (states_dict, calendar_day), ein Tupel
-              pro Simulationstag. states_dict = {Knoten-ID: Zustandsstring}.
-              Index 0 = Anfangszustand (Patient Zero infiziert, Kalendertag = start_day).
-            - start_day (int)    : Der Kalendertag, an dem die Infektion begann (1–365).
-            - patient_zero (int) : Knoten-ID des ersten Infizierten (vom Seed bestimmt).
+            - history (list):
+              List of tuples (states_dict, calendar_day), one tuple per stored
+              simulation state.
+            - start_day (int):
+              Calendar day on which the outbreak starts.
+            - patient_zero (int):
+              Node id of the first infected node.
     """
-    # Zufallsgenerator mit dem Seed initialisieren (für Reproduzierbarkeit)
+    # Create the one and only local random generator for this simulation run.
+    # This generator is used for start_day, patient_zero, and all later
+    # infection/recovery decisions, which makes the run reproducible.
     rng = random.Random(seed)
 
-    # Startdatum und Patient Zero per Seed festlegen
-    start_day    = rng.randint(1, 365)
+    # Determine outbreak start day and patient zero from the same seeded RNG.
+    start_day = rng.randint(1, 365)
     patient_zero = rng.choice(list(graph.nodes()))
 
-    # Alle Knoten auf "anfällig" setzen, dann Patient Zero infizieren
+    # Initialize all nodes as susceptible, then infect patient zero.
     states = {node: STATE_S for node in graph.nodes()}
     states[patient_zero] = STATE_I
 
-    # Anfangszustand als Frame 0 in der History ablegen
+    # Store the initial condition as frame 0.
     history = [(dict(states), start_day)]
 
-    # Simulationsschleife: maximal 365 Tage
+    # Run at most 365 daily steps.
     for step in range(1, 366):
-        # Aktuellen Kalendertag berechnen (zyklisch zwischen 1 und 365)
+        # Compute the calendar day corresponding to this simulation step.
         calendar_day = (start_day - 1 + step) % 365 + 1
 
-        # Effektive Parameter für diesen Kalendertag ermitteln
+        # Get the effective parameters for the current day.
         beta_eff, gamma_eff = get_effective_params(
             beta, gamma_base, calendar_day, extended_mode
         )
 
-        # Einen Simulationsschritt durchführen (synchrones Zwei-Phasen-Update)
+        # Advance the epidemic by one synchronous step.
         states = simulate_step(states, graph, beta_eff, gamma_eff, rng)
 
-        # Aktuellen Zustand in der History festhalten
+        # Store the updated state snapshot.
         history.append((dict(states), calendar_day))
 
-        # Frühzeitiger Abbruch, wenn keine Infizierten mehr vorhanden sind
-        infected_count = sum(1 for s in states.values() if s == STATE_I)
+        # Stop early if no infected nodes remain.
+        infected_count = sum(1 for state in states.values() if state == STATE_I)
         if infected_count == 0:
             break
 
-    # patient_zero zusätzlich zurückgeben, damit die UI ihn anzeigen kann
     return history, start_day, patient_zero
 
 
 # =============================================================================
-# ABSCHNITT 4: UI UND ANIMATION
+# SECTION 4: INTERACTIVE UI AND ANIMATION
 # =============================================================================
 
 
-# ── Globaler Simulationszustand ───────────────────────────────────────────────
-# Dieses Dictionary speichert den gesamten Laufzeitzustand der Anwendung.
-# Alle Callback-Funktionen lesen und schreiben auf dieses gemeinsame Objekt.
-# (Es ersetzt den Einsatz einer Klasse und ist für Anfänger leichter lesbar.)
+# -- Global simulation state ---------------------------------------------------
+# This dictionary stores the shared runtime state of the application.
+# All callbacks read from and write to this object, which keeps the design
+# procedural and avoids class-based architecture.
 sim_state = {
-    "playing":        False,               # Ob die Animation gerade läuft
-    "extended_mode":  False,               # Ob der Extended Mode aktiv ist
-    "current_frame":  0,                   # Aktuell angezeigter Frame-Index
-    "histories":      [None, None, None],  # Vorberechnete Simulationsverläufe
-    "start_days":     [None, None, None],  # Startdaten der drei Simulationen
-    "patient_zeros":  [None, None, None],  # Patient-Zero-Knoten-ID je Simulation
-    "graphs":         [None, None, None],  # Die drei Netzwerkgraphen
-    "layouts":        [None, None, None],  # Knotenpositionierungen (Spring-Layout)
-    "max_frames":     0,                   # Längste Simulationslänge (individueller Abbruch)
+    "playing": False,             # Whether the animation is currently running
+    "extended_mode": False,       # Whether seasonal effects are enabled
+    "current_frame": 0,           # Currently displayed frame index
+    "histories": [None, None, None],       # Precomputed simulation histories
+    "start_days": [None, None, None],      # Start day for each topology
+    "patient_zeros": [None, None, None],   # Patient zero id for each topology
+    "graphs": [None, None, None],          # The three network graphs
+    "layouts": [None, None, None],         # Spring layouts for plotting
+    "max_frames": 0,              # Longest simulation length across topologies
 }
 
 
-# ── Figure mit GridSpec (2 Zeilen × 3 Spalten) ───────────────────────────────
-# Zeile 0 (height_ratio 3): Netzwerk-Visualisierungen – größer dargestellt.
-# Zeile 1 (height_ratio 2): SIR-Verlaufskurven – kompakter, aber gut lesbar.
-# top=0.88, bottom=0.40 → 48 % der Figurhöhe für die Plots;
-# die restlichen 40 % unten sind für die Slider-Kontrollleiste reserviert.
+# -- Figure and GridSpec layout ------------------------------------------------
+# Row 0 contains the three network visualizations.
+# Row 1 contains the corresponding epidemic curves.
 fig = plt.figure(figsize=(20, 11))
 
 gs = GridSpec(
-    2, 3,
+    2,
+    3,
     figure=fig,
-    top=0.88, bottom=0.40,
-    left=0.05, right=0.98,
+    top=0.88,
+    bottom=0.40,
+    left=0.05,
+    right=0.98,
     height_ratios=[3, 2],
-    hspace=0.55, wspace=0.28,
+    hspace=0.55,
+    wspace=0.28,
 )
 
-# Netzwerk-Achsen (obere Zeile): zeigen Knoten und Kanten farblich nach S/I/R
-ax_nets   = [fig.add_subplot(gs[0, i]) for i in range(3)]
-# Verlaufskurven-Achsen (untere Zeile): zeigen S/I/R-Zeitreihen mit Monatsbeschriftung
+# Top row: network plots.
+ax_nets = [fig.add_subplot(gs[0, i]) for i in range(3)]
+
+# Bottom row: epidemic curves.
 ax_curves = [fig.add_subplot(gs[1, i]) for i in range(3)]
 
-# Haupttitel: y=0.96 liegt sicher oberhalb des GridSpec-Bereichs (top=0.88),
-# damit er keinen Subplot-Titel überlappt.
-fig.suptitle("SIR-Netzwerksimulation  –  Topologievergleich", fontsize=13, y=0.96)
+# Place the main title safely above the subplot area.
+fig.suptitle("Network-based SIR Simulation - Topology Comparison", fontsize=13, y=0.96)
 
 
-# ── Slider-Achsen (linke Hälfte der Kontrollleiste) ───────────────────────────
-# Jeder Slider erhält eine eigene kleine Achse. Format: [links, unten, breite, höhe]
-# in Figure-Koordinaten (0 = linker/unterer Rand, 1 = rechter/oberer Rand).
-# x=0.18 lässt links genug Platz für die Slider-Beschriftungen.
-ax_slider_n      = plt.axes([0.18, 0.31, 0.18, 0.025])
+# -- Slider axes ---------------------------------------------------------------
+# Each slider gets its own small axis in figure coordinates.
+ax_slider_n = plt.axes([0.18, 0.31, 0.18, 0.025])
 ax_slider_degree = plt.axes([0.18, 0.26, 0.18, 0.025])
-ax_slider_beta   = plt.axes([0.18, 0.21, 0.18, 0.025])
-ax_slider_gamma  = plt.axes([0.18, 0.16, 0.18, 0.025])
-ax_slider_seed   = plt.axes([0.18, 0.11, 0.18, 0.025])
+ax_slider_beta = plt.axes([0.18, 0.21, 0.18, 0.025])
+ax_slider_gamma = plt.axes([0.18, 0.16, 0.18, 0.025])
+ax_slider_seed = plt.axes([0.18, 0.11, 0.18, 0.025])
 
 
-# ── Slider erstellen ──────────────────────────────────────────────────────────
-# Jeder Slider hat ein Label (links), einen Minimal-/Maximalwert und einen
-# Startwert (valinit). valstep=1 erzwingt ganzzahlige Schritte.
-
-# N: Anzahl der Knoten (ganzzahlig, 10 bis 200)
+# -- Sliders -------------------------------------------------------------------
 slider_n = mwidgets.Slider(
     ax=ax_slider_n,
-    label="N (Knoten)",
-    valmin=10, valmax=200, valinit=50, valstep=1,
+    label="N (nodes)",
+    valmin=10,
+    valmax=200,
+    valinit=50,
+    valstep=1,
 )
 
-# Avg. Degree: Durchschnittliche Kanten pro Knoten (ganzzahlig, 1 bis 10)
 slider_degree = mwidgets.Slider(
     ax=ax_slider_degree,
     label="Avg. Degree",
-    valmin=1, valmax=10, valinit=4, valstep=1,
+    valmin=1,
+    valmax=10,
+    valinit=4,
+    valstep=1,
 )
 
-# Beta: Infektionswahrscheinlichkeit pro Kontakt (kontinuierlich, 0.0 bis 1.0)
 slider_beta = mwidgets.Slider(
     ax=ax_slider_beta,
     label="Beta",
-    valmin=0.0, valmax=1.0, valinit=0.3,
+    valmin=0.0,
+    valmax=1.0,
+    valinit=0.3,
 )
 
-# Gamma Base: Grund-Genesungsrate pro Tag (kontinuierlich, 0.0 bis 1.0)
 slider_gamma = mwidgets.Slider(
     ax=ax_slider_gamma,
     label="Gamma Base",
-    valmin=0.0, valmax=1.0, valinit=0.1,
+    valmin=0.0,
+    valmax=1.0,
+    valinit=0.1,
 )
 
-# Seed: Zufallsinitialisierung; bestimmt Startdatum + Patient Zero (0 bis 999)
 slider_seed = mwidgets.Slider(
     ax=ax_slider_seed,
     label="Seed",
-    valmin=0, valmax=999, valinit=42, valstep=1,
+    valmin=0,
+    valmax=999,
+    valinit=42,
+    valstep=1,
 )
 
 
-# ── Buttons (rechte Hälfte der Kontrollleiste) ────────────────────────────────
-ax_btn_play  = plt.axes([0.62, 0.27, 0.13, 0.05])
+# -- Buttons -------------------------------------------------------------------
+ax_btn_play = plt.axes([0.62, 0.27, 0.13, 0.05])
 ax_btn_reset = plt.axes([0.78, 0.27, 0.13, 0.05])
 
-btn_play  = mwidgets.Button(ax_btn_play,  "▶  Play")
-btn_reset = mwidgets.Button(ax_btn_reset, "↺  Reset")
+btn_play = mwidgets.Button(ax_btn_play, "Play")
+btn_reset = mwidgets.Button(ax_btn_reset, "Run")
 
 
-# ── Extended-Mode-Checkbox ────────────────────────────────────────────────────
-# CheckButtons erzeugt eine Checkbox; [False] = initial deaktiviert.
-# Im Extended Mode werden Jahreszeiten- und Feiertagseffekte auf Beta und Gamma
-# angewandt (Wintereffekt: Gamma × 0.8 / Feiertagseffekt: Beta × 1.3).
+# -- Extended mode checkbox ----------------------------------------------------
+# In extended mode, winter reduces gamma and holiday periods increase beta.
 ax_chk_extended = plt.axes([0.62, 0.08, 0.30, 0.12])
 chk_extended = mwidgets.CheckButtons(
-    ax_chk_extended, ["Extended Mode"], [False]
+    ax_chk_extended,
+    ["Extended Mode"],
+    [False],
 )
 
 
-# ── Hilfsfunktionen für Jahreszeiten, Monatsbeschriftung und Kurvenzeichnung ──
+# -- Helper functions for season labels, month labels, and curve drawing ------
 
 def get_season_label(day):
     """
-    Gibt die deutsche Jahreszeiten-Bezeichnung für einen Kalendertag zurück.
+    Convert a calendar day into an English season label.
 
-    Verwendet eine vereinfachte meteorologische Einteilung:
-        Winter  : Tage   1– 90 und 350–365 (Dez, Jan, Feb, Mär)
-        Frühling: Tage  91–181             (Apr, Mai, Jun)
-        Sommer  : Tage 182–273             (Jul, Aug, Sep)
-        Herbst  : Tage 274–349             (Okt, Nov)
+    Internally, the function normalizes the input into 1..365 and uses a simple
+    fixed mapping:
+        - Winter: day 1..90 and 350..365
+        - Spring: day 91..181
+        - Summer: day 182..273
+        - Autumn: day 274..349
 
-    Parameter:
-        day (int): Kalendertag des Jahres (wird auf 1–365 normiert).
+    Parameters:
+        day (int):
+            Calendar day of the year. Values outside 1..365 are wrapped into
+            that interval with modular arithmetic.
 
-    Rückgabe:
-        str: Deutschsprachige Jahreszeiten-Bezeichnung.
+    Returns:
+        str:
+            One of the season labels "Winter", "Spring", "Summer", or "Autumn".
     """
-    # Normierung auf 1–365
-    d = (day - 1) % 365 + 1
-    if d <= 90 or d >= 350:
+    normalized_day = (day - 1) % 365 + 1
+
+    if normalized_day <= 90 or normalized_day >= 350:
         return "Winter"
-    if d <= 181:
-        return "Frühling"
-    if d <= 273:
-        return "Sommer"
-    return "Herbst"
+    if normalized_day <= 181:
+        return "Spring"
+    if normalized_day <= 273:
+        return "Summer"
+    return "Autumn"
 
 
 def day_to_month_name(cal_day):
     """
-    Gibt die deutsche Monatsabkürzung für einen Kalendertag (1–365) zurück.
+    Convert a calendar day into an English month abbreviation.
 
-    Die Funktion durchsucht die Liste MONTH_START_DAYS rückwärts (Dezember zuerst)
-    und gibt den Monatsnamen zurück, in dessen Zeitraum der Tag fällt.
-    Zum Beispiel liefert cal_day=45 → "Feb" (Februar, Tage 32–59).
+    Internally, the function normalizes the input to 1..365 and then searches
+    backward through MONTH_START_DAYS. The first month start that is less than
+    or equal to the normalized day determines the month label.
 
-    Parameter:
-        cal_day (int): Kalendertag des Jahres (wird zyklisch auf 1–365 normiert).
+    Parameters:
+        cal_day (int):
+            Calendar day of the year. Values outside 1..365 are wrapped into
+            that interval with modular arithmetic.
 
-    Rückgabe:
-        str: Dreistellige deutsche Monatsabkürzung aus MONTH_NAMES,
-             z.B. "Jan", "Mär", "Dez".
+    Returns:
+        str:
+            Three-letter English month abbreviation such as "Jan", "Mar", or "Dec".
     """
-    # Normierung auf 1–365
-    d = (cal_day - 1) % 365 + 1
-    # Rückwärts durch die Monatsstarts suchen (Dezember bis Januar)
-    for i in range(11, -1, -1):
-        if d >= MONTH_START_DAYS[i]:
-            return MONTH_NAMES[i]
-    return "Jan"  # Fallback (sollte nie erreicht werden)
+    normalized_day = (cal_day - 1) % 365 + 1
+
+    for month_index in range(11, -1, -1):
+        if normalized_day >= MONTH_START_DAYS[month_index]:
+            return MONTH_NAMES[month_index]
+
+    return "Jan"
 
 
 def get_month_ticks(start_day, total_steps):
     """
-    Berechnet Tick-Positionen und Monatsnamen für die X-Achse einer Verlaufskurve.
+    Compute x-axis tick positions and month labels for an epidemic curve.
 
-    Die X-Achse einer Verlaufskurve zeigt Simulationsschritte (0, 1, 2, ...),
-    soll aber mit deutschen Monatsnamen beschriftet werden. Diese Funktion
-    berechnet dafür:
-        1. Schritt 0 erhält immer einen Tick mit dem Monatsnamen des Startdatums.
-        2. Für jeden weiteren Schritt: Wenn der entsprechende Kalendertag der
-           erste Tag eines Monats ist (in MONTH_START_DAYS enthalten),
-           wird ein Tick gesetzt.
+    Internally, the x-axis is measured in simulation steps starting at 0, but
+    the axis labels should show months. This function therefore:
+        1. Places a tick at step 0 labeled with the outbreak month.
+        2. Iterates through all later steps.
+        3. Converts each step back into a calendar day.
+        4. Adds a tick whenever that calendar day is the first day of a month.
 
-    Beispiel: start_day=328 (November), total_steps=62:
-        → Ticks bei [0, 7, 39] mit Labels ["Nov", "Dez", "Jan"]
+    Parameters:
+        start_day (int):
+            Calendar day on which the outbreak starts.
+        total_steps (int):
+            Maximum number of simulation steps shown on the curve.
 
-    Parameter:
-        start_day   (int): Kalendertag, an dem die Simulation beginnt (1–365).
-                           Bestimmt den ersten Tick-Label.
-        total_steps (int): Maximale Anzahl von Simulationsschritten
-                           (= Länge der History − 1).
-
-    Rückgabe:
+    Returns:
         tuple[list[int], list[str]]:
-            - ticks  (list[int]): Simulationsschritt-Indizes für die Tick-Markierungen.
-            - labels (list[str]): Zugehörige deutsche Monatsabkürzungen.
+            - ticks: x positions where month labels should be shown
+            - labels: corresponding month abbreviations
     """
-    # Erster Tick: Startschritt 0 bekommt den Monatsnamen des Startdatums
-    ticks  = [0]
+    ticks = [0]
     labels = [day_to_month_name(start_day)]
 
-    # Alle weiteren Schritte prüfen: liegt ein Monatserster vor?
     for step in range(1, total_steps + 1):
         cal_day = (start_day - 1 + step) % 365 + 1
         if cal_day in MONTH_START_DAYS:
-            month_idx = MONTH_START_DAYS.index(cal_day)
+            month_index = MONTH_START_DAYS.index(cal_day)
             ticks.append(step)
-            labels.append(MONTH_NAMES[month_idx])
+            labels.append(MONTH_NAMES[month_index])
 
     return ticks, labels
 
 
 def draw_curve_for(ax_curve, topology_idx, frame_idx):
     """
-    Zeichnet die SIR-Verlaufskurven für eine Topologie in eine Kurven-Achse.
+    Draw the SIR time series for one topology into a curve axis.
 
-    Die Funktion baut die Zeitreihendaten aus dem vorberechneten Simulationsverlauf
-    bis zum angegebenen Frame auf und zeichnet drei Linien in der Kurven-Achse:
-        - Blau  (COLOR_S): Zeitreihe der anfälligen Personen (S)
-        - Rot   (COLOR_I): Zeitreihe der infizierten Personen (I)
-        - Grün  (COLOR_R): Zeitreihe der genesenen Personen (R)
+    Internally, the function reads the precomputed history for the requested
+    topology, truncates it at the currently visible frame, and counts how many
+    nodes are in states S, I, and R for each stored step. It then draws:
+        - a blue S curve
+        - a red I curve
+        - a green R curve
 
-    Die X-Achse zeigt Simulationsschritte (0, 1, ...) und wird mit deutschen
-    Monatsnamen beschriftet, die auf das Startdatum der Infektion kalibriert sind
-    (via get_month_ticks). Eine gestrichelte senkrechte Linie markiert den aktuell
-    angezeigten Zeitpunkt in der Animation.
+    It also:
+        - adds a vertical dashed line at the current frame
+        - sets the y-axis to 0..N
+        - applies month labels on the x-axis based on the outbreak start day
 
-    Wenn die Simulation für diese Topologie noch nicht vorliegt (histories[idx] ist None),
-    wird die Achse nur geleert und keine Daten gezeichnet.
+    Parameters:
+        ax_curve (matplotlib.axes.Axes):
+            Target axis where the epidemic curves should be drawn.
+        topology_idx (int):
+            Index of the topology:
+                0 = Erdős-Rényi
+                1 = Watts-Strogatz
+                2 = Barabási-Albert
+        frame_idx (int):
+            Current global animation frame. It is clamped to the valid range
+            of the selected topology.
 
-    Parameter:
-        ax_curve     (matplotlib.axes.Axes): Ziel-Achse für die Kurven.
-                                              Entspricht einem Element aus ax_curves[].
-        topology_idx (int)                 : Index der Topologie (0=ER, 1=WS, 2=BA).
-                                              Bestimmt, welche Daten aus sim_state
-                                              gelesen werden.
-        frame_idx    (int)                 : Aktueller Animations-Frame-Index.
-                                              Wird auf den letzten gültigen Frame
-                                              der jeweiligen Topologie begrenzt.
-
-    Rückgabe:
-        None. Verändert ax_curve direkt (clear + neu zeichnen).
+    Returns:
+        None:
+            The function updates the given axis directly.
     """
-    # Achse immer zuerst leeren (clear-and-redraw-Ansatz)
+    # Always clear the curve axis before redrawing it.
     ax_curve.clear()
 
-    # Keine Simulation vorhanden → leere Achse zurückgeben
+    # If no simulation is available yet, hide the axis content.
     if sim_state["histories"][topology_idx] is None:
         ax_curve.set_axis_off()
         return
 
-    history   = sim_state["histories"][topology_idx]
-    n         = sim_state["graphs"][topology_idx].number_of_nodes()
+    history = sim_state["histories"][topology_idx]
+    node_count = sim_state["graphs"][topology_idx].number_of_nodes()
     start_day = sim_state["start_days"][topology_idx]
     max_steps = len(history) - 1
 
-    # frame_idx auf gültigen Bereich dieser Topologie begrenzen
+    # Clamp the requested frame index to the valid range for this topology.
     safe_idx = min(frame_idx, max_steps)
 
-    # Zeitreihen-Arrays bis zum aktuellen Frame aufbauen
+    # Build the S, I, R time series from history entry 0 to safe_idx.
     steps_x = list(range(safe_idx + 1))
-    s_vals, i_vals, r_vals = [], [], []
-    for f in range(safe_idx + 1):
-        snap, _ = history[f]
-        s_vals.append(sum(1 for v in snap.values() if v == STATE_S))
-        i_vals.append(sum(1 for v in snap.values() if v == STATE_I))
-        r_vals.append(sum(1 for v in snap.values() if v == STATE_R))
+    s_values = []
+    i_values = []
+    r_values = []
 
-    # Drei Linien zeichnen (gleiche Farben wie die Knotenfarben)
-    ax_curve.plot(steps_x, s_vals, color=COLOR_S, lw=1.2, label="S")
-    ax_curve.plot(steps_x, i_vals, color=COLOR_I, lw=1.2, label="I")
-    ax_curve.plot(steps_x, r_vals, color=COLOR_R, lw=1.2, label="R")
+    for frame in range(safe_idx + 1):
+        snapshot, _ = history[frame]
+        s_values.append(sum(1 for value in snapshot.values() if value == STATE_S))
+        i_values.append(sum(1 for value in snapshot.values() if value == STATE_I))
+        r_values.append(sum(1 for value in snapshot.values() if value == STATE_R))
 
-    # Gestrichelte senkrechte Linie am aktuellen Simulations-Tag
+    # Draw the three compartment curves.
+    ax_curve.plot(steps_x, s_values, color=COLOR_S, lw=1.2, label="S")
+    ax_curve.plot(steps_x, i_values, color=COLOR_I, lw=1.2, label="I")
+    ax_curve.plot(steps_x, r_values, color=COLOR_R, lw=1.2, label="R")
+
+    # Mark the current visible simulation step.
     if steps_x:
         ax_curve.axvline(x=steps_x[-1], color="#aaaaaa", lw=0.8, ls="--")
 
-    # Achsenlimits: X von 0 bis Simulations-Ende; Y von 0 bis N (+ 8% Randpuffer)
+    # Configure axis limits and style.
     ax_curve.set_xlim(0, max(max_steps, 1))
-    ax_curve.set_ylim(0, n * 1.08)
-    ax_curve.set_ylabel("Personen", fontsize=6)
+    ax_curve.set_ylim(0, node_count * 1.08)
+    ax_curve.set_ylabel("People", fontsize=6)
     ax_curve.tick_params(labelsize=6)
     ax_curve.grid(True, alpha=0.25, lw=0.4)
 
-    # X-Achse mit deutschen Monatsnamen beschriften (via Hilfsfunktion)
+    # Compute and apply month labels on the x-axis.
     ticks, labels = get_month_ticks(start_day, max_steps)
     ax_curve.set_xticks(ticks)
     ax_curve.set_xticklabels(labels, fontsize=5.5, rotation=35, ha="right")
@@ -722,338 +798,361 @@ def draw_curve_for(ax_curve, topology_idx, frame_idx):
 
 def draw_frame(frame_idx):
     """
-    Zeichnet für einen Animations-Frame alle drei Netzwerke UND die dazugehörigen
-    SIR-Verlaufskurven (obere Zeile: Netzwerke, untere Zeile: Kurven).
+    Draw one animation frame for all three network views and all three curves.
 
-    Für jede der drei Topologien werden zwei Plots aktualisiert:
+    Internally, the function updates two visual layers per topology:
 
-        Obere Zeile – Netzwerk (ax_nets[idx]):
-            - Kanten: tiefes Dunkelgrau (#262626), dünn und halbtransparent
-              (alpha=0.15), damit die farbigen Knoten optisch dominieren.
-            - Knoten: farbig nach SIR-Zustand (Blau=S / Rot=I / Grün=R).
-            - Titel: Topologiename, Sim-Tag, Kalendertag, Jahreszeit,
-              Feiertags-Hinweis (nur im Extended Mode), S/I/R-Zählerstand.
+        Top row - network plot:
+            - draw dark graph edges
+            - draw colored nodes by S, I, R state
+            - display a title with topology name, simulation day, calendar day,
+              season, optional holiday note, and S/I/R counts
 
-        Untere Zeile – Verlaufskurven (ax_curves[idx]):
-            - Delegiert an draw_curve_for(), welches S/I/R-Linien mit
-              deutschen Monatsnamen auf der X-Achse zeichnet.
+        Bottom row - epidemic curve:
+            - delegate the actual drawing to draw_curve_for()
 
-    Jede Topologie wird separat auf ihren eigenen letzten gültigen Frame begrenzt
-    (safe_idx = min(frame_idx, len(history)−1)), sodass Topologien, die früher
-    fertig sind, ihren Endzustand dauerhaft anzeigen.
+    Each topology uses its own clamped frame index so that shorter simulations
+    remain visible in their final state while longer ones can continue.
 
-    Alle Netzwerk-Achsen werden vor dem Zeichnen geleert (clear-and-redraw).
-    Die Kurven-Achsen werden durch draw_curve_for() intern geleert.
-    Abschließend wird der Canvas ohne blockierendes plt.show() aktualisiert.
+    Parameters:
+        frame_idx (int):
+            Global animation frame index requested by the animation loop.
 
-    Parameter:
-        frame_idx (int): Index in den Simulationsverläufen (0 = Infektionstag).
-                         Wird je Topologie auf deren letzten gültigen Frame begrenzt.
-
-    Rückgabe:
-        None. Verändert ax_nets[] und ax_curves[] direkt.
+    Returns:
+        None:
+            The function redraws the corresponding matplotlib axes directly.
     """
-    # Alle Netzwerk-Achsen leeren
+    # Clear all network axes before redrawing them.
     for ax in ax_nets:
         ax.clear()
         ax.set_axis_off()
 
-    # Jeden Subplot (Netzwerk + Kurve) einzeln zeichnen
+    # Draw network and curve for each topology.
     for idx in range(3):
-        ax = ax_nets[idx]
+        ax_net = ax_nets[idx]
 
-        # Simulation muss bereits berechnet worden sein
         if sim_state["histories"][idx] is None:
-            ax.set_title(f"{TOPOLOGY_NAMES[idx]}\n(Noch keine Simulation)", fontsize=9)
+            ax_net.set_title(f"{TOPOLOGY_NAMES[idx]}\n(No simulation yet)", fontsize=9)
             ax_curves[idx].clear()
             continue
 
         history = sim_state["histories"][idx]
-        graph   = sim_state["graphs"][idx]
-        pos     = sim_state["layouts"][idx]
+        graph = sim_state["graphs"][idx]
+        positions = sim_state["layouts"][idx]
 
-        # frame_idx auf gültigen Bereich dieser Topologie begrenzen
+        # Clamp the frame index to the valid history length of this topology.
         safe_idx = min(frame_idx, len(history) - 1)
         states_snapshot, calendar_day = history[safe_idx]
 
-        # Knotenfarben anhand des SIR-Zustands bestimmen
-        color_map   = {STATE_S: COLOR_S, STATE_I: COLOR_I, STATE_R: COLOR_R}
+        # Determine node colors from the SIR state of each node.
+        color_map = {
+            STATE_S: COLOR_S,
+            STATE_I: COLOR_I,
+            STATE_R: COLOR_R,
+        }
         node_colors = [color_map[states_snapshot[node]] for node in graph.nodes()]
 
-        # Knotengröße: bei mehr Knoten kleinere Punkte (keine Überlappung)
-        n_nodes   = graph.number_of_nodes()
-        node_size = max(15, int(500 / max(1, n_nodes)))
+        # Reduce node size for larger graphs to limit overlap.
+        node_count = graph.number_of_nodes()
+        node_size = max(15, int(500 / max(1, node_count)))
 
-        # Kanten zeichnen: tiefes Dunkelgrau (#262626), damit farbige Knoten dominieren
+        # Draw edges in a dark neutral tone so the node states stay prominent.
         nx.draw_networkx_edges(
-            graph, pos, ax=ax,
-            alpha=0.15, width=0.5, edge_color="#262626",
+            graph,
+            positions,
+            ax=ax_net,
+            alpha=0.15,
+            width=0.5,
+            edge_color="#262626",
         )
-        # Knoten zeichnen (farbig nach SIR-Zustand)
+
+        # Draw nodes with state-based colors.
         nx.draw_networkx_nodes(
-            graph, pos, ax=ax,
-            node_color=node_colors, node_size=node_size, alpha=0.90,
+            graph,
+            positions,
+            ax=ax_net,
+            node_color=node_colors,
+            node_size=node_size,
+            alpha=0.90,
         )
 
-        # S/I/R-Zähler für diesen Frame berechnen
-        s_count = sum(1 for s in states_snapshot.values() if s == STATE_S)
-        i_count = sum(1 for s in states_snapshot.values() if s == STATE_I)
-        r_count = sum(1 for s in states_snapshot.values() if s == STATE_R)
+        # Count how many nodes are currently in S, I, and R.
+        s_count = sum(1 for state in states_snapshot.values() if state == STATE_S)
+        i_count = sum(1 for state in states_snapshot.values() if state == STATE_I)
+        r_count = sum(1 for state in states_snapshot.values() if state == STATE_R)
 
-        # Jahreszeit und optionale Feiertags-Hinweise ermitteln
-        season       = get_season_label(calendar_day)
+        season = get_season_label(calendar_day)
         holiday_note = ""
         if sim_state["extended_mode"] and is_holiday_period(calendar_day):
-            holiday_note = "  | Feiertag (+Beta)"
-        ext_tag = "  [Ext.]" if sim_state["extended_mode"] else ""
+            holiday_note = " | Holiday (+beta)"
+        extended_tag = " [Extended]" if sim_state["extended_mode"] else ""
 
-        # Titel des Netzwerk-Subplots setzen
-        ax.set_title(
-            f"{TOPOLOGY_NAMES[idx]}{ext_tag}\n"
-            f"Sim-Tag {safe_idx}  |  Kal.-Tag {calendar_day}  |  {season}{holiday_note}\n"
+        # Set a compact descriptive title for the network panel.
+        ax_net.set_title(
+            f"{TOPOLOGY_NAMES[idx]}{extended_tag}\n"
+            f"Sim day {safe_idx} | Calendar day {calendar_day} | {season}{holiday_note}\n"
             f"S={s_count}   I={i_count}   R={r_count}",
-            fontsize=8, pad=4,
+            fontsize=8,
+            pad=4,
         )
 
-        # Verlaufskurve in der unteren Zeile für diese Topologie zeichnen
+        # Draw the corresponding epidemic curve underneath.
         draw_curve_for(ax_curves[idx], idx, frame_idx)
 
-    # Canvas ohne blockierendes plt.show() neu zeichnen
+    # Request a non-blocking canvas redraw.
     fig.canvas.draw_idle()
 
 
-# ── Haupt-Callbacks ───────────────────────────────────────────────────────────
+# -- Main callbacks ------------------------------------------------------------
 
 def build_all_simulations():
     """
-    Liest alle Slider-Werte aus, erstellt drei Netzwerkgraphen und berechnet
-    die vollständigen Simulationen für alle drei Topologien im Voraus.
+    Read the current UI parameters, rebuild all graphs, and recompute everything.
 
-    Dieser Vorberechnungsansatz ermöglicht eine verzögerungsfreie Animation:
-    Alle Frames sind bereits vor dem Start der Wiedergabe bekannt.
-    Die Funktion wird aufgerufen bei:
-        - Klick auf '↺ Reset'
-        - Änderung eines beliebigen Sliders (Live-Reset)
-        - Änderung der Extended-Mode-Checkbox
-        - Beim Programmstart (initiale Berechnung)
+    Internally, this function is the central reset point of the application.
+    It performs these steps:
 
-    Ablauf:
-        1. Slider-Werte N, avg_degree, beta, gamma_base, seed auslesen.
-        2. Drei Graphen (Erdős-Rényi, Watts-Strogatz, Barabási-Albert) erstellen.
-        3. Spring-Layout für jeden Graphen berechnen (Knotenpositionen).
-        4. run_simulation() für jeden Graphen vollständig durchführen.
-        5. Ergebnisse in sim_state speichern.
-        6. max_frames = längste Simulation − 1 (individuelle Abbruchkriterien).
-        7. seed_info_text mit Startdatum, Patient-Zero und Sim-Dauern aktualisieren.
-        8. Frame-Zähler auf 0 setzen und Frame 0 zeichnen.
+        1. Read N, average degree, beta, gamma, and seed from the sliders.
+        2. Create the three graphs with the exact same central seed.
+        3. Compute a seeded spring layout for each graph.
+        4. Run a full SIR simulation for each graph with the same central seed.
+        5. Store all generated objects in sim_state.
+        6. Determine the longest history length across the three topologies.
+        7. Update the seed information label.
+        8. Reset the animation to frame 0 and redraw the UI.
 
-    Parameter:
-        Keine. Alle Parameter werden aus den globalen Slider-Widgets gelesen.
+    Determinism note:
+        The slider seed is the only starting point for all stochastic behavior.
+        It is passed to:
+            - NetworkX graph generators
+            - NetworkX spring_layout
+            - run_simulation, where a local Random(seed) instance controls
+              start_day, patient_zero, and all epidemic events
 
-    Rückgabe:
-        None. Verändert sim_state, ax_nets[] und ax_curves[] direkt.
+        This ensures that running the script again with the same parameters
+        reproduces the same graphs, layouts, outbreak day, patient zero,
+        and simulation trajectories.
+
+    Parameters:
+        None:
+            The function reads all required input values directly from the UI widgets.
+
+    Returns:
+        None:
+            The function updates sim_state, the seed label, and the plots directly.
     """
-    # ── Slider-Werte auslesen ─────────────────────────────────────────────────
-    n          = int(slider_n.val)
+    # Read the current slider values.
+    n = int(slider_n.val)
     avg_degree = float(slider_degree.val)
-    beta       = float(slider_beta.val)
+    beta = float(slider_beta.val)
     gamma_base = float(slider_gamma.val)
-    seed       = int(slider_seed.val)
-    extended   = sim_state["extended_mode"]
+    seed = int(slider_seed.val)
+    extended = sim_state["extended_mode"]
 
-    # ── Drei Graphen mit denselben Parametern erstellen ───────────────────────
+    # Create the three graphs with the same central seed.
     graphs = [
         create_erdos_renyi(n, avg_degree, seed),
         create_watts_strogatz(n, avg_degree, seed),
         create_barabasi_albert(n, avg_degree, seed),
     ]
 
-    # ── Spring-Layout berechnen (räumliche Knotenpositionierung) ─────────────
-    # spring_layout platziert stark vernetzte Knoten räumlich näher beieinander
-    layouts = [nx.spring_layout(g, seed=seed) for g in graphs]
+    # Compute deterministic layouts from the same seed.
+    layouts = [nx.spring_layout(graph, seed=seed) for graph in graphs]
 
-    # ── Vollständige Simulation für alle drei Topologien vorberechnen ─────────
-    # Jedes Modell läuft individuell bis I==0 oder max. 365 Tage.
-    # Kein Modell wird vorzeitig gestoppt, weil ein anderes bereits fertig ist.
-    histories, start_days, patient_zeros = [], [], []
-    for g in graphs:
-        hist, sday, pzero = run_simulation(g, beta, gamma_base, seed, extended)
-        histories.append(hist)
-        start_days.append(sday)
-        patient_zeros.append(pzero)
+    # Precompute the full epidemic histories for all three topologies.
+    histories = []
+    start_days = []
+    patient_zeros = []
 
-    # ── Ergebnisse in sim_state speichern ─────────────────────────────────────
-    sim_state["graphs"]        = graphs
-    sim_state["layouts"]       = layouts
-    sim_state["histories"]     = histories
-    sim_state["start_days"]    = start_days
+    for graph in graphs:
+        history, start_day, patient_zero = run_simulation(
+            graph,
+            beta,
+            gamma_base,
+            seed,
+            extended,
+        )
+        histories.append(history)
+        start_days.append(start_day)
+        patient_zeros.append(patient_zero)
+
+    # Store all results in the shared application state.
+    sim_state["graphs"] = graphs
+    sim_state["layouts"] = layouts
+    sim_state["histories"] = histories
+    sim_state["start_days"] = start_days
     sim_state["patient_zeros"] = patient_zeros
-    # max_frames = LÄNGSTE Simulation − 1: alle drei laufen bis zum letzten Ende.
-    # Kurz beendete Topologien frieren auf ihrem Endzustand ein (via safe_idx).
-    sim_state["max_frames"] = max(len(h) for h in histories) - 1
 
-    # ── Seed-Info-Label mit den festgelegten Startparametern aktualisieren ────
-    # Da alle drei Topologien denselben Seed verwenden, sind start_day und
-    # patient_zero für alle drei identisch.
-    durations = [len(h) - 1 for h in histories]
+    # Use the longest history so all topologies can animate until the last one ends.
+    sim_state["max_frames"] = max(len(history) for history in histories) - 1
+
+    # Update the label that explains what the current seed produced.
+    durations = [len(history) - 1 for history in histories]
     seed_info_text.set_text(
-        f"Seed {seed}  ──  festgelegte Parameter:\n"
-        f"  Startdatum :  Tag {start_days[0]}  ({get_season_label(start_days[0])})\n"
-        f"  Patient Zero:  Knoten #{patient_zeros[0]}\n"
-        f"  Sim-Dauer  :  ER={durations[0]}d  WS={durations[1]}d  BA={durations[2]}d"
+        f"Seed {seed} -- deterministic values:\n"
+        f"  Start day   : Day {start_days[0]} ({get_season_label(start_days[0])})\n"
+        f"  Patient zero: Node #{patient_zeros[0]}\n"
+        f"  Run length  : ER={durations[0]}d  WS={durations[1]}d  BA={durations[2]}d"
     )
 
-    # Animation auf Frame 0 zurücksetzen und neu zeichnen
+    # Reset the animation to frame 0.
     sim_state["current_frame"] = 0
-    sim_state["playing"]       = False
-    btn_play.label.set_text("▶  Play")
+    sim_state["playing"] = False
+    btn_play.label.set_text("Play")
+
+    # Redraw the first frame immediately.
     draw_frame(0)
 
 
 def toggle_play(event):
     """
-    Schaltet die Animation zwischen Play und Pause um.
+    Toggle the animation between playing and paused.
 
-    Läuft die Animation, wird sie pausiert. Ist sie pausiert, wird sie gestartet.
-    Hat die Animation ihren letzten Frame erreicht, springt ein erneuter
-    Play-Klick automatisch zu Frame 0 zurück und startet von vorne.
+    Internally, the function checks whether a simulation is already available.
+    If not, it does nothing. Otherwise:
+        - if the animation is running, it pauses it
+        - if the animation is paused, it starts it
+        - if the animation has already reached the final frame, it first resets
+          the frame counter to 0 before starting again
 
-    Wurde noch keine Simulation berechnet (histories[0] ist None), passiert nichts.
+    Parameters:
+        event:
+            Matplotlib button click event object. The function does not use its
+            internal fields directly.
 
-    Parameter:
-        event: Matplotlib-Button-Klick-Event (Inhalt wird nicht ausgewertet).
-
-    Rückgabe:
-        None.
-    """
-    # Sicherheitscheck: Noch keine Simulation vorhanden
+    Returns:
+        None:
+            The function updates sim_state and the play button label directly.
+        """
+    # Ignore clicks if no simulation has been computed yet.
     if sim_state["histories"][0] is None:
         return
 
     if sim_state["playing"]:
-        # Animation anhalten
+        # Pause the running animation.
         sim_state["playing"] = False
-        btn_play.label.set_text("▶  Play")
+        btn_play.label.set_text("Play")
     else:
-        # Am Ende angelangt → von vorne starten
+        # Restart from the beginning if the animation is already at the end.
         if sim_state["current_frame"] >= sim_state["max_frames"]:
             sim_state["current_frame"] = 0
-        sim_state["playing"] = True
-        btn_play.label.set_text("⏸  Pause")
 
-    # Button-Beschriftung sofort aktualisieren
+        # Start the animation.
+        sim_state["playing"] = True
+        btn_play.label.set_text("Pause")
+
     fig.canvas.draw_idle()
 
 
 def on_reset(event):
     """
-    Stoppt die laufende Animation und berechnet alle drei Simulationen sofort neu.
+    Stop the current animation and rebuild all simulations immediately.
 
-    Liest die aktuellen Slider-Werte aus, erstellt neue Netzwerke und führt
-    vollständige Simulationen durch. Danach wird Frame 0 angezeigt.
-    Wird durch den '↺ Reset'-Button ausgelöst.
+    Internally, this callback is connected to the Run button. It stops playback,
+    restores the play button label, and then calls build_all_simulations() so
+    that graphs, curves, and deterministic seed-derived values are regenerated
+    from the current UI parameters.
 
-    Parameter:
-        event: Matplotlib-Button-Klick-Event (Inhalt wird nicht ausgewertet).
+    Parameters:
+        event:
+            Matplotlib button click event object. The function does not use its
+            internal fields directly.
 
-    Rückgabe:
-        None.
+    Returns:
+        None:
+            The function updates the application state and redraws the plots.
     """
-    # Laufende Animation stoppen
+    # Stop the animation before rebuilding the simulation state.
     sim_state["playing"] = False
-    btn_play.label.set_text("▶  Play")
-    # Simulationen mit aktuellen Parameterwerten neu aufbauen
+    btn_play.label.set_text("Play")
+
+    # Recompute everything from the current sliders and checkbox.
     build_all_simulations()
 
 
 def on_extended_toggle(label):
     """
-    Callback für die Extended-Mode-Checkbox.
+    Toggle extended mode and immediately recompute all simulations.
 
-    Schaltet den Extended Mode ein oder aus und löst sofort eine Neuberechnung
-    aller drei Simulationen aus, damit die saisonalen Effekte (Wintereffekt und
-    Feiertagseffekt) sofort im Ergebnis sichtbar werden.
+    Internally, this callback reads the checkbox state, stores it in sim_state,
+    and rebuilds the full simulation set so that winter and holiday effects
+    become visible immediately in both the network views and the curves.
 
-    Extended Mode ein:
-        Wintereffekt (Tage 1–90 und 350–365): gamma × 0.8
-        Feiertagseffekt (±3 Tage um HOLIDAYS): beta × 1.3
-    Extended Mode aus: beta und gamma unverändert.
+    Parameters:
+        label (str):
+            Label text of the clicked checkbox entry. It is not used because
+            there is only one checkbox.
 
-    Parameter:
-        label (str): Bezeichnung der angeklickten Checkbox (wird nicht ausgewertet,
-                     da nur eine Checkbox existiert).
-
-    Rückgabe:
-        None.
+    Returns:
+        None:
+            The function updates sim_state and redraws the plots indirectly
+            through build_all_simulations().
     """
-    # Aktuellen Checkbox-Status auslesen (get_status gibt Liste zurück)
+    # Read the checkbox state and store it in the shared application state.
     sim_state["extended_mode"] = chk_extended.get_status()[0]
-    # Simulation mit neuem Modus sofort neu berechnen
+
+    # Recompute all simulations with the new mode.
     build_all_simulations()
 
 
 def advance_animation(frame):
     """
-    Animations-Callback – wird von FuncAnimation alle 450 ms aufgerufen.
+    Advance the global animation by one frame.
 
-    Wenn die Animation läuft (playing == True), wird current_frame um 1
-    erhöht und draw_frame() für den neuen Frame aufgerufen. Beim Erreichen
-    des letzten Frames stoppt die Animation automatisch.
+    Internally, this function is called by FuncAnimation every 450 ms.
+    If playback is disabled, it returns immediately. If playback is enabled:
+        - it increments the global frame index while frames remain
+        - it redraws the new frame
+        - it automatically stops the animation once the last global frame is reached
 
-    Die Funktion läuft auch dann weiter, wenn playing == False ist, tut aber
-    in diesem Fall nichts (passiver Bereitschaftsmodus).
+    Parameters:
+        frame (int):
+            Internal frame counter supplied by FuncAnimation. The function does
+            not use this value because it manages the animation state through
+            sim_state["current_frame"].
 
-    Parameter:
-        frame (int): Von FuncAnimation übergebener interner Zähler.
-                     Wird nicht verwendet – sim_state["current_frame"] ist maßgeblich.
-
-    Rückgabe:
-        None.
+    Returns:
+        None:
+            The function updates the global frame index and the visible plots.
     """
-    # Passiver Modus: nichts tun
+    # Do nothing while the animation is paused.
     if not sim_state["playing"]:
         return
 
     if sim_state["current_frame"] < sim_state["max_frames"]:
-        # Nächsten Frame anzeigen
+        # Advance to the next frame and redraw.
         sim_state["current_frame"] += 1
         draw_frame(sim_state["current_frame"])
     else:
-        # Letzten Frame erreicht: Animation automatisch stoppen
+        # Stop automatically when the last frame has been reached.
         sim_state["playing"] = False
-        btn_play.label.set_text("▶  Play")
+        btn_play.label.set_text("Play")
         fig.canvas.draw_idle()
 
 
-# ── Callbacks an Buttons und Checkbox verknüpfen ──────────────────────────────
+# -- Connect callbacks to widgets ----------------------------------------------
 btn_play.on_clicked(toggle_play)
 btn_reset.on_clicked(on_reset)
 chk_extended.on_clicked(on_extended_toggle)
 
-# ── Live-Update: Jede Slider-Änderung löst sofortigen Neustart der Simulation aus ─
-# Die Lambda-Funktionen empfangen den neuen Slider-Wert (val), ignorieren ihn aber,
-# da build_all_simulations() selbst alle Slider direkt ausliest.
-# Hinweis: Bei großem N kann die Neuberechnung kurz (~0.5–1 s) dauern.
-slider_n.on_changed(lambda val: build_all_simulations())
-slider_degree.on_changed(lambda val: build_all_simulations())
-slider_beta.on_changed(lambda val: build_all_simulations())
-slider_gamma.on_changed(lambda val: build_all_simulations())
-slider_seed.on_changed(lambda val: build_all_simulations())
+# Every slider change triggers an immediate full rebuild so the UI stays live.
+slider_n.on_changed(lambda value: build_all_simulations())
+slider_degree.on_changed(lambda value: build_all_simulations())
+slider_beta.on_changed(lambda value: build_all_simulations())
+slider_gamma.on_changed(lambda value: build_all_simulations())
+slider_seed.on_changed(lambda value: build_all_simulations())
 
-# ── FuncAnimation einrichten ──────────────────────────────────────────────────
-# interval=450: Jeder Frame wird 450 ms lang angezeigt (~2 Frames/Sekunde).
-# Langsam genug, um Ausbreitungswellen in Netzwerk und Kurve visuell zu verfolgen.
-# cache_frame_data=False: kein Caching, Zustand wird in sim_state verwaltet.
-# Die Variable muss einer globalen Referenz zugewiesen werden, sonst löscht
-# der Garbage Collector das Objekt und die Animation stoppt sofort.
+
+# -- Configure animation -------------------------------------------------------
+# A slower interval makes epidemic waves easier to observe visually.
 anim = FuncAnimation(fig, advance_animation, interval=450, cache_frame_data=False)
 
-# ── Farbkodierungs-Legende ────────────────────────────────────────────────────
-# Erklärt die Knotenfarben und Kurvenfarben unten rechts im Fenster
+
+# -- Legend --------------------------------------------------------------------
 legend_patches = [
-    mpatches.Patch(color=COLOR_S, label="S – Anfällig (Susceptible)"),
-    mpatches.Patch(color=COLOR_I, label="I – Infiziert (Infected)"),
-    mpatches.Patch(color=COLOR_R, label="R – Genesen (Recovered)"),
+    mpatches.Patch(color=COLOR_S, label="S - Susceptible"),
+    mpatches.Patch(color=COLOR_I, label="I - Infected"),
+    mpatches.Patch(color=COLOR_R, label="R - Recovered"),
 ]
 fig.legend(
     handles=legend_patches,
@@ -1063,34 +1162,38 @@ fig.legend(
     framealpha=0.85,
 )
 
-# ── Bedienungshinweis am unteren Rand ────────────────────────────────────────
+
+# -- Bottom usage hint ---------------------------------------------------------
 fig.text(
-    0.50, 0.005,
-    "① Slider ziehen = Live-Update   ②  '↺ Reset' = Neustart   ③  '▶ Play' = Animation",
-    ha="center", va="bottom", fontsize=8, color="#555555",
+    0.50,
+    0.005,
+    "1. Move sliders = live update   2. Click 'Run' = rebuild   3. Click 'Play' = animate",
+    ha="center",
+    va="bottom",
+    fontsize=8,
+    color="#555555",
 )
 
-# ── Seed-Info-Textfeld ────────────────────────────────────────────────────────
-# Zeigt dynamisch die vom Seed festgelegten Startparameter an:
-#   - Startdatum der Infektion (Kalendertag + Jahreszeit)
-#   - Knoten-ID des Patient Zero
-#   - Individuelle Simulationsdauer jeder Topologie
-# Positioniert in der Mitte zwischen Sliders (enden bei x≈0.36) und
-# Buttons (beginnen bei x=0.62) – kein Überlapp mit anderen Elementen.
-# Wird durch build_all_simulations() bei jedem Reset mit set_text() aktualisiert.
+
+# -- Seed information text box -------------------------------------------------
+# This label shows which deterministic values are produced by the current seed.
 seed_info_text = fig.text(
-    0.40, 0.37,
-    "Seed-Parameter werden nach erstem Reset angezeigt.",
-    ha="left", va="top",
-    fontsize=7.5, family="monospace",
+    0.40,
+    0.37,
+    "Seed-derived values will appear here after initialization.",
+    ha="left",
+    va="top",
+    fontsize=7.5,
+    family="monospace",
     color="#333333",
     bbox=dict(boxstyle="round,pad=0.4", facecolor="#f0f0f8", alpha=0.88),
 )
 
-# ── Initiale Simulation beim Programmstart ────────────────────────────────────
-# Sofort beim Start mit den Standard-Sliderwerten berechnen und anzeigen,
-# damit das Fenster nicht leer erscheint und seed_info_text befüllt wird.
+
+# -- Initial computation on program start --------------------------------------
+# Build everything immediately so the window is populated from the start.
 build_all_simulations()
 
-# ── Matplotlib-Fenster öffnen und Ereignisschleife starten ───────────────────
+
+# -- Start the matplotlib event loop -------------------------------------------
 plt.show()

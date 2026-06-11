@@ -24,6 +24,8 @@ Untersucht wird die zentrale Frage: Wie stark unterscheiden sich Epidemieverläu
 
 Die Simulation arbeitet in diskreten Zeitschritten (1 Schritt = 1 Tag). Zu Beginn sind alle Knoten im Zustand S. Ein zufällig gewählter Knoten wird als Patient Zero im Zustand I initialisiert. Zusätzlich wird ein zufälliger Starttag im Kalenderjahr (1–365) gewählt, um kalendarische Effekte zu ermöglichen.
 
+Für die Reproduzierbarkeit wird ein lokaler Zufallsgenerator mit dem zentralen Slider-Seed initialisiert. Dieser Seed ist die einzige Quelle aller stochastischen Prozesse (Netzwerkerzeugung, Layout, Starttag, Patient Zero, tägliche Übergänge). Damit gilt: identischer Seed + identische Parameter erzeugen identische Ergebnisse.
+
 Für jeden Tag gilt eine synchrone Aktualisierung in zwei Phasen:
 
 1. **Auswertungsphase**: Auf Basis des Zustands zu Tagesbeginn werden Infektionen und Genesungen stochastisch ausgewertet.
@@ -111,6 +113,8 @@ Die interaktive Oberfläche zeigt alle drei Topologien nebeneinander oben (Netzw
 
 Jede Slider-Änderung oder Checkbox-Änderung triggert eine vollständige Neuberechnung aller drei Topologien.
 
+Der Seed-Slider (0–999) steuert dabei deterministisch alle Zufallsentscheidungen. Die Anwendung zeigt die seed-abhängigen Werte (Starttag, Patient Zero, Lauflänge je Topologie) zusätzlich im UI an.
+
 ### 2.6 Stop-Kriterium und Beobachtung
 
 Ein Simulationslauf endet unter zwei Bedingungen:
@@ -160,7 +164,7 @@ Der Extended Mode zeigt, dass zeitabhängige Parameter zusätzlich zur Topologie
 
 **Stochastische Variabilität:**
 
-Der Seed bestimmt Patient Zero, Starttag und Netzwerkinstanz. Derselbe Seed erzeugt reproduzierbare Läufe. Unterschiedliche Seeds zeigen natürliche Variabilität. Dies ist realistisch: reale Epidemien sind stochastische Prozesse.
+Stochastik bleibt ein zentraler Bestandteil des Modells, ist aber vollständig kontrolliert. Der zentrale Seed bestimmt deterministisch die Netzwerkinstanz, den Starttag, Patient Zero und alle täglichen Bernoulli-Entscheidungen. Derselbe Seed erzeugt daher denselben Verlauf; unterschiedliche Seeds erzeugen unterschiedliche, aber jeweils reproduzierbare Verläufe.
 
 ## 5. Conclusion and Limitations
 
@@ -188,3 +192,176 @@ Erdős, P., & Rényi, A. (1959). On random graphs. Publicationes Mathematicae, 6
 Kermack, W. O., & McKendrick, A. G. (1927). A contribution to the mathematical theory of epidemics. Proceedings of the Royal Society A, 115(772), 700–721.
 
 Watts, D. J., & Strogatz, S. H. (1998). Collective dynamics of small-world networks. Nature, 393, 440–442.
+
+
+## Appendix A: ODD-Protokoll (SIR-Netzwerksimulation)
+
+Dieses Appendix dokumentiert das implementierte Modell nach ODD (Overview, Design Concepts, Details) und entspricht dem aktuellen Stand von main.py.
+
+### I. Overview
+
+#### 1. Purpose
+
+Ziel des Modells ist der Vergleich der Epidemiedynamik eines SIR-Prozesses auf drei unterschiedlichen Netzwerktopologien:
+
+- Erdős-Rényi
+- Watts-Strogatz
+- Barabási-Albert
+
+Untersucht werden insbesondere Unterschiede in Ausbreitungsgeschwindigkeit, Peak-Verhalten und Simulationsdauer bei gleichen Basisparametern.
+
+#### 2. Entities, State Variables, and Scales
+
+##### 2.1 Entitäten
+
+- Knoten: Individuen einer geschlossenen Population
+- Kanten: Kontakte zwischen Individuen
+- Graphen: je ein Netzwerk pro Topologie
+
+##### 2.2 Zustandsvariablen
+
+Knoten-Zustand:
+
+- S: Susceptible (anfällig)
+- I: Infected (infiziert)
+- R: Recovered (genesen)
+
+Globale Parameter:
+
+- $N$: Anzahl der Knoten
+- $\beta$: Basis-Infektionswahrscheinlichkeit pro Kontakt und Tag
+- $\gamma$: Basis-Genesungswahrscheinlichkeit pro infiziertem Knoten und Tag
+- avg_degree: Zielwert für mittleren Knotengrad
+- seed: Zufallsstartwert
+- extended_mode: Aktivierung saisonaler Effekte
+
+Abgeleitete Tagesparameter:
+
+- $\beta_{\text{eff}}$
+- $\gamma_{\text{eff}}$
+
+##### 2.3 Skalen
+
+- Zeit: diskret, 1 Zeitschritt = 1 Tag
+- Zeithorizont: maximal 365 Tage
+- Kalenderdarstellung: zyklische Tageszählung 1 bis 365
+- Raum: Netzwerkstruktur, keine explizite Geometrie
+
+#### 3. Process Overview and Scheduling
+
+Die Dynamik erfolgt synchron pro Tag:
+
+1. Aktuelle Zustände werden gelesen.
+2. Für alle infizierten Knoten werden Infektion und Genesung stochastisch ausgewertet.
+3. Alle Zustandsänderungen werden gleichzeitig übernommen.
+
+Infektion (pro infiziertem Knoten und suszeptiblem Nachbarn):
+
+$P_{\text{inf}} = \beta_{\text{eff}}$
+
+Genesung (pro infiziertem Knoten):
+
+$P_{\text{rec}} = \gamma_{\text{eff}}$
+
+Simulationsende:
+
+- entweder nach 365 Tagen
+- oder früher bei $I(t)=0$
+
+### II. Design Concepts
+
+#### 1. Basic Principles
+
+Das Modell koppelt SIR-Übergänge mit expliziter Kontaktstruktur. Die Topologie bestimmt, welche Kontakte möglich sind und beeinflusst dadurch die globale Dynamik.
+
+#### 2. Emergence
+
+Die Kurven $S(t)$, $I(t)$ und $R(t)$ entstehen aus lokalen Nachbarschaftsinteraktionen und stochastischen Übergängen.
+
+#### 3. Stochasticity
+
+Zufall wird eingesetzt für:
+
+- Netzwerkrealisierung (je Topologie)
+- Starttag im Kalenderjahr
+- Patient Zero
+- tägliche Infektions- und Genesungsereignisse
+
+Die Zufallssteuerung ist vollständig seed-deterministisch: Der zentrale Seed wird konsistent an alle stochastischen Teilprozesse weitergegeben. In der Epidemielogik wird ein lokaler Generator (`random.Random(seed)`) vor der Ermittlung von Starttag und Patient Zero initialisiert, sodass keine unkontrollierten globalen Zufallsaufrufe die Reproduzierbarkeit beeinflussen.
+
+#### 4. Interaction
+
+Interaktionen finden ausschließlich entlang existierender Kanten statt. Es gibt keine Fernkontakte außerhalb des Netzwerks.
+
+#### 5. Adaptation
+
+Es gibt keine adaptive Verhaltensänderung von Agenten. Optional verändert extended_mode nur die effektiven Parameter über Kalenderlogik.
+
+#### 6. Observation
+
+Pro Tag werden die globalen Zustandsgrößen gezählt:
+
+- $S(t)$
+- $I(t)$
+- $R(t)$
+
+Zusätzlich werden Kalenderinformationen für die Visualisierung genutzt (Monate, Jahreszeit, Feiertagsperioden).
+
+### III. Details
+
+#### 1. Initialization
+
+Für jede Topologie wird ein eigener Graph erzeugt, jeweils mit denselben Eingabeparametern.
+
+Topologie-spezifische Erzeugung:
+
+1. Erdős-Rényi
+   $p = \frac{\text{avg\_degree}}{N-1}$, begrenzt auf $[0,1]$.
+
+2. Watts-Strogatz
+   Nachbarschaftsparameter $k$ aus avg_degree (gerade, mindestens 2, höchstens $N-1$), Rewiring-Wahrscheinlichkeit 0.1.
+
+3. Barabási-Albert
+   $m = \max(1, \text{round}(\text{avg\_degree}/2))$, begrenzt auf $N-1$.
+
+Alle Knoten starten in Zustand S. Ein zufälliger Knoten wird als Patient Zero auf I gesetzt. Der Starttag wird zufällig in $\{1,\dots,365\}$ gewählt.
+
+Für identische Seeds sind diese Werte (Patient Zero und Starttag) identisch reproduzierbar.
+
+#### 2. Submodels
+
+##### 2.1 Seasonal and Holiday Modifier
+
+Wenn extended_mode deaktiviert ist:
+
+- $\beta_{\text{eff}}=\beta$
+- $\gamma_{\text{eff}}=\gamma$
+
+Wenn extended_mode aktiviert ist:
+
+1. Wintertage: $d \le 90$ oder $d \ge 350$
+
+$\gamma_{\text{eff}} = 0.8 \cdot \gamma$
+
+2. Feiertagsperioden: Abstand zu definierten Feiertagen höchstens 3 Tage (zyklisch über Jahresgrenze)
+
+$\beta_{\text{eff}} = 1.3 \cdot \beta$
+
+Anschließend werden beide Werte auf $[0,1]$ begrenzt.
+
+##### 2.2 Infection Submodel
+
+Für jeden infizierten Knoten wird jeder Nachbar geprüft. Nur Nachbarn in Zustand S können infiziert werden. Die Bernoulli-Entscheidung nutzt $P_{\text{inf}}$.
+
+##### 2.3 Recovery Submodel
+
+Für jeden infizierten Knoten wird eine Bernoulli-Entscheidung mit $P_{\text{rec}}$ gezogen. Bei Erfolg wechselt der Zustand nach R.
+
+##### 2.4 Observation and Visualization Submodel
+
+Die Anwendung visualisiert parallel:
+
+- oben: Netzwerkzustand je Topologie
+- unten: Zeitreihen von $S(t)$, $I(t)$ und $R(t)$
+
+Monatstexte auf der x-Achse werden aus dem Starttag und der Kalendertagsfortschreibung abgeleitet.
