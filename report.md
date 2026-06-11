@@ -1,5 +1,5 @@
 # SIR-Epidemie auf Netzwerken
-
+Gruppe 2        Maximilian HUBMANN, Ivan JURIC, Jacob MENN, Filip SARCEVIC, Florian SCHWAB
 ## Abstrakt
 
 Dieses Projekt untersucht, wie sich eine SIR-Epidemie auf drei unterschiedlichen Netzwerktopologien ausbreitet: Erdős-Rényi, Watts-Strogatz und Barabási-Albert. Die Simulation ist als interaktive Matplotlib-Anwendung umgesetzt und berechnet alle drei Topologien parallel mit identischen Basisparametern. Die Zustandsübergänge erfolgen diskret und synchron in den Zuständen Susceptible (S), Infected (I) und Recovered (R). Zusätzlich kann ein Extended Mode aktiviert werden, der saisonale Effekte modelliert: reduzierte Genesungsrate im Winter und erhöhte Infektionsrate in Feiertagsperioden. Die Ergebnisse zeigen, dass die Netzwerkstruktur einen deutlichen Einfluss auf Ausbreitungsdynamik, Peak-Verhalten und Gesamtdauer hat.
